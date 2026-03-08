@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>GLSL BOOTH — WebGL Photo Studio</title>
+<title>PHOTO BOOTH</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap');
 
@@ -398,15 +398,15 @@
 <!-- PERMISSION SCREEN -->
 <div id="permission-screen">
   <div class="cam-icon">📷</div>
-  <h1>GLSL BOOTH</h1>
-  <p>Real-time WebGL photo booth with GPU-accelerated shader filters. Grant camera access to begin.</p>
+  <h1>PHOTO BOOTH</h1>
+  <p>Including real-time head squishing. Grant camera access to begin.</p>
   <button class="btn-start" id="btn-start">Enable Camera</button>
 </div>
 
 <div class="app-shell">
   <!-- HEADER -->
   <header class="header">
-    <div class="logo">GLSL <span>BOOTH</span></div>
+    <div class="logo">PHOTO <span>BOOTH</span></div>
     <div class="fps-counter">FPS: <b id="fps-val">—</b></div>
   </header>
 
@@ -416,7 +416,7 @@
       <canvas id="glcanvas"></canvas>
       <div id="flash-overlay"></div>
       <div id="filter-name-overlay">PASSTHROUGH</div>
-      <div id="nocam-msg">⚠ NO CAMERA<br>CHECK PERMISSIONS</div>
+      <div id="nocam-msg">⚠ Lame NO CAMERA<br>CHECK PERMISSIONS</div>
     </div>
   </div>
 
@@ -1049,7 +1049,7 @@ function buildProgram(fragSrc) {
 
 function initGL() {
   gl = canvas.getContext('webgl', { preserveDrawingBuffer: true, antialias: false });
-  if (!gl) { alert('WebGL not supported'); return false; }
+  if (!gl) { alert('Lame WebGL not supported'); return false; }
 
   // Compile all filter programs
   for (const f of FILTERS) {

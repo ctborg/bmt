@@ -81,23 +81,20 @@
 
   .stage {
     position: relative;
-    /* Fill width on portrait, fill height on landscape */
-    width: 100%;
-    height: 100%;
     display: flex;
     align-items: center;
     justify-content: center;
+    width: 100%;
+    height: 100%;
   }
 
   canvas#glcanvas {
-    /* Letterbox/pillarbox to fill available space without overflow */
+    /* Fill available space but never overflow — aspect-ratio set dynamically */
     max-width: 100%;
     max-height: 100%;
-    width: auto;
-    height: auto;
-    /* aspect-ratio set dynamically from video.videoWidth/Height after stream starts */
+    width: 100%;
+    height: 100%;
     display: block;
-    object-fit: contain;
   }
 
   #flash-overlay {
@@ -173,7 +170,7 @@
     overflow-x: auto;
     padding: 2px 0 8px;
     scrollbar-width: none;
-    /* Don't center — let it scroll naturally on mobile */
+    justify-content: center; /* centers when all chips fit; scrolls when they don't */
   }
   .carousel-track::-webkit-scrollbar { display: none; }
 
@@ -224,8 +221,8 @@
   .controls-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 10px;
+    justify-content: center;
+    gap: 12px;
     padding-top: 4px;
   }
 
@@ -237,12 +234,14 @@
     border: 1px solid var(--border);
     background: var(--surface2);
     color: var(--muted);
-    padding: 9px 14px;
+    padding: 9px 0;
+    width: 100px;
     border-radius: 4px;
     cursor: pointer;
     transition: all 0.15s;
-    flex: 1;
+    text-align: center;
   }
+  .btn:hover { border-color: var(--accent); color: var(--text); }
   .btn:active { border-color: var(--accent); color: var(--text); }
 
   .btn-capture {
@@ -1223,13 +1222,12 @@ function render(ts) {
     document.getElementById('fps-val').textContent = fps;
   }
 
-  // Resize canvas to its actual rendered pixel size
-  const stageWrap = canvas.parentElement.parentElement; // stage-wrap
-  const W = canvas.clientWidth;
-  const H = canvas.clientHeight;
+  // Resize GL canvas resolution to match its CSS-rendered size
+  const W = canvas.clientWidth  || 640;
+  const H = canvas.clientHeight || 480;
   if (canvas.width !== W || canvas.height !== H) {
-    canvas.width  = W || 640;
-    canvas.height = H || 480;
+    canvas.width  = W;
+    canvas.height = H;
   }
 
   // Mouse speed (decays each frame)

@@ -37,4 +37,10 @@ Everything is a single self-contained `index.html` — no build step, no depende
 
 ## Usage
 
-Just open `index.html` in a browser and grant camera access.
+`getUserMedia` requires a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts) — the page must be served over **HTTPS** or from **localhost**. Opening `index.html` directly as a `file://` URL won't work in most browsers.  For easy local testing, use a local websever. If you have python installed, try this: 
+
+```bash
+# Quick local server (Python)
+python -m http.server 8080
+# then open http://localhost:8080
+```

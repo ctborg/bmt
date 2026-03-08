@@ -479,47 +479,87 @@ void main(){
     emoji: "❄️",
     frag: `
 precision mediump float;
-uniform sampler2D u_tex;
+uniform sampler2D u_tex;       // live camera
+uniform sampler2D u_snow_tex;  // 1D accumulation strip (width x 1)
 uniform float u_time;
 uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform float u_mouse_speed;   // hand velocity magnitude
 varying vec2 v_uv;
 
 float rand(vec2 n){ return fract(sin(dot(n, vec2(12.9898,78.233)))*43758.5453); }
+float rand1(float n){ return fract(sin(n*127.1)*43758.5453); }
 
 void main(){
   vec2 uv = v_uv;
   uv.x = 1.0 - uv.x;
   vec3 video = texture2D(u_tex, uv).rgb;
 
-  // Aspect-correct UV
-  vec2 aspect = vec2(u_resolution.x/u_resolution.y, 1.0);
+  // ── Falling flakes ──────────────────────────────────────
+  vec2 aspect = vec2(u_resolution.x / u_resolution.y, 1.0);
   vec2 suv = v_uv * aspect;
-
-  float snow = 0.0;
-  float layers = 5.0;
+  float fallingSnow = 0.0;
   for(float i = 0.0; i < 5.0; i++){
-    float speed = 0.08 + i * 0.05;
-    float gridSize = 12.0 + i * 8.0;
-    float drift = sin(u_time * 0.3 + i * 2.1) * 0.08;
-
-    vec2 cell = floor((suv * gridSize) + vec2(drift, u_time * speed * gridSize));
-    vec2 frac = fract(suv * gridSize + vec2(drift, u_time * speed * gridSize));
-
-    float r = rand(cell + i * 37.1);
-    if(r > 0.85){
-      float flakeSize = 0.12 + rand(cell + 99.0) * 0.22;
-      float twinkle = 0.75 + 0.25 * sin(u_time * 3.0 + r * 100.0);
-      float dist = length(frac - 0.5);
-      float alpha = smoothstep(flakeSize, flakeSize * 0.3, dist) * twinkle;
-      float brightness = 0.7 + 0.3 * (i / layers);
-      snow = max(snow, alpha * brightness);
+    float speed     = 0.06 + i * 0.04;
+    float gridSize  = 14.0 + i * 7.0;
+    float drift     = sin(u_time * 0.25 + i * 1.9) * 0.07;
+    vec2 cell = floor(suv * gridSize + vec2(drift, u_time * speed * gridSize));
+    vec2 fr   = fract(suv * gridSize + vec2(drift, u_time * speed * gridSize));
+    float r = rand(cell + i * 31.7);
+    if(r > 0.82){
+      float sz      = 0.10 + rand(cell + 77.0) * 0.20;
+      float twinkle = 0.8 + 0.2 * sin(u_time * 4.0 + r * 80.0);
+      float d       = length(fr - 0.5);
+      fallingSnow   = max(fallingSnow, smoothstep(sz, sz*0.25, d) * twinkle);
     }
   }
 
-  vec3 snowColor = vec3(0.92, 0.96, 1.0);
-  // Slight blue tint on video
-  video = mix(video, video * vec3(0.85, 0.90, 1.05), 0.3);
-  vec3 col = mix(video, snowColor, snow);
+  // ── Accumulated snow on surfaces ───────────────────────
+  // u_snow_tex encodes per-column: R = pile height (0..1), G = disturbance
+  float colX      = uv.x; // already mirrored
+  vec2  snowData  = texture2D(u_snow_tex, vec2(colX, 0.5)).rg;
+  float pileHeight = snowData.r;   // fraction from bottom of pile
+  float disturb    = snowData.g;   // 0=calm,1=disturbed
+
+  // The pile sits ON TOP of detected surfaces — uv.y is 0=bottom,1=top
+  // pileHeight is stored as the Y position of the surface top
+  float aboveSurface = uv.y - pileHeight;          // >0 means above surface
+  float pileThickness = 0.018 + 0.012 * rand(vec2(colX * 43.7, 0.5)); // fluffy edge
+  float accumSnow = smoothstep(pileThickness, -0.003, aboveSurface);
+  accumSnow *= smoothstep(0.0, 0.04, pileHeight);  // only where pile exists
+  accumSnow *= (1.0 - disturb * 0.92);             // hand wipes it away
+
+  // Sparkle on pile surface
+  float surfaceBand = smoothstep(0.003, 0.0, abs(aboveSurface));
+  float sparkle = rand(vec2(colX * 200.0, floor(u_time * 8.0))) > 0.94 ? 1.0 : 0.0;
+  sparkle *= surfaceBand * 2.0;
+
+  // ── Dust particles blown by hand ───────────────────────
+  float dustSnow = 0.0;
+  if(u_mouse_speed > 0.003){
+    vec2 mpos = vec2(1.0 - u_mouse.x, 1.0 - u_mouse.y); // mirror to match video
+    float proximity = 1.0 - smoothstep(0.0, 0.35, length(uv - mpos));
+    // Animated dust cloud near cursor
+    for(float d = 0.0; d < 4.0; d++){
+      float angle = rand1(d * 13.7 + floor(u_time*15.0)) * 6.2831;
+      float radius = 0.04 + rand1(d * 7.3) * 0.09;
+      vec2 dustPos  = mpos + vec2(cos(angle), sin(angle)) * radius;
+      float dp      = length(uv - dustPos);
+      dustSnow      = max(dustSnow, smoothstep(0.022, 0.002, dp) * proximity * u_mouse_speed * 18.0);
+    }
+    dustSnow = clamp(dustSnow, 0.0, 1.0);
+  }
+
+  // ── Composite ──────────────────────────────────────────
+  vec3 snowColor   = vec3(0.93, 0.97, 1.00);
+  vec3 sparkColor  = vec3(1.00, 1.00, 1.00);
+  video = mix(video, video * vec3(0.82, 0.88, 1.06), 0.28); // cold tint
+  vec3 col = video;
+  col = mix(col, snowColor, accumSnow);
+  col = mix(col, snowColor * 1.3, fallingSnow * 0.9);
+  col = mix(col, snowColor * 1.2, dustSnow);
+  col += sparkColor * sparkle * 0.6;
+  col  = clamp(col, 0.0, 1.0);
   gl_FragColor = vec4(col, 1.0);
 }`
   },
@@ -779,13 +819,24 @@ void main(){
 //  WEBGL SETUP
 // ─────────────────────────────────────────────
 let gl, program, posBuffer, texLocation;
-let uTime, uMouse, uResolution, uTex;
+let uTime, uMouse, uResolution, uTex, uSnowTex, uMouseSpeed;
 let video, videoTexture;
 let currentFilter = 0;
 let programs = [];
 let mouseX = 0.5, mouseY = 0.5;
+let lastMouseX = 0.5, lastMouseY = 0.5;
+let mouseSpeed = 0;
 let lastFrame = 0, frameCount = 0, fps = 0;
 let animId = null;
+
+// Snow accumulation system
+const SNOW_COLS = 256; // resolution of accumulation strip
+let snowAccumTex = null;
+let snowHeights  = new Float32Array(SNOW_COLS); // pile top Y per column (0=none)
+let snowDisturb  = new Float32Array(SNOW_COLS); // disturbance per column
+let snowTexData  = new Uint8Array(SNOW_COLS * 4); // RGBA strip uploaded to GPU
+// Offscreen canvas for edge-detecting the video each frame
+let edgeCanvas, edgeCtx, edgeData;
 
 const canvas = document.getElementById('glcanvas');
 
@@ -829,6 +880,21 @@ function initGL() {
   gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
 
+  // Snow accumulation texture (1D strip: SNOW_COLS x 1)
+  snowAccumTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, snowAccumTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, SNOW_COLS, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, snowTexData);
+
+  // Offscreen canvas for CPU-side edge detection
+  edgeCanvas = document.createElement('canvas');
+  edgeCanvas.width  = SNOW_COLS;
+  edgeCanvas.height = 64; // sample at low res
+  edgeCtx = edgeCanvas.getContext('2d', { willReadFrequently: true });
+
   return true;
 }
 
@@ -845,6 +911,8 @@ function setProgram(idx) {
   uMouse      = gl.getUniformLocation(program, 'u_mouse');
   uResolution = gl.getUniformLocation(program, 'u_resolution');
   uTex        = gl.getUniformLocation(program, 'u_tex');
+  uSnowTex    = gl.getUniformLocation(program, 'u_snow_tex');
+  uMouseSpeed = gl.getUniformLocation(program, 'u_mouse_speed');
 }
 
 function initVideoTexture() {
@@ -854,6 +922,97 @@ function initVideoTexture() {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+}
+
+// ─────────────────────────────────────────────
+//  SNOW ACCUMULATION SIMULATION
+// ─────────────────────────────────────────────
+const SNOW_FILTER_IDX = 2; // index of Snowfall in FILTERS array
+
+function updateSnowAccumulation() {
+  if (!video || video.readyState < 2) return;
+
+  // Draw mirrored video into tiny offscreen canvas for edge sampling
+  edgeCtx.save();
+  edgeCtx.translate(edgeCanvas.width, 0);
+  edgeCtx.scale(-1, 1);
+  edgeCtx.drawImage(video, 0, 0, edgeCanvas.width, edgeCanvas.height);
+  edgeCtx.restore();
+
+  const imgData = edgeCtx.getImageData(0, 0, SNOW_COLS, edgeCanvas.height);
+  const px = imgData.data;
+  const H  = edgeCanvas.height;
+  const W  = SNOW_COLS;
+
+  // Hand disturbance: mouse position & speed
+  // mouseX/Y are in 0..1 canvas space (already mirrored for display)
+  const handX     = mouseX; // mirrored match
+  const handY     = 1.0 - mouseY;
+  const distRadius = 0.12 + mouseSpeed * 1.5; // bigger radius when moving fast
+
+  for (let col = 0; col < W; col++) {
+    const cx = col / W;
+
+    // ── Find topmost significant edge in this column (top-down scan) ──
+    // We look for the highest pixel row where luminance contrast is high
+    // That corresponds to the top of a head / eyebrow / shoulder
+    let edgeRow = -1;
+    for (let row = 0; row < H - 1; row++) {
+      const i0 = (row * W + col) * 4;
+      const i1 = ((row + 1) * W + col) * 4;
+      const lum0 = (px[i0] * 299 + px[i0+1] * 587 + px[i0+2] * 114) / 1000;
+      const lum1 = (px[i1] * 299 + px[i1+1] * 587 + px[i1+2] * 114) / 1000;
+      // Also check horizontal neighbours for better edge robustness
+      const colL = Math.max(0, col - 1);
+      const colR = Math.min(W - 1, col + 1);
+      const iL   = (row * W + colL) * 4;
+      const iR   = (row * W + colR) * 4;
+      const lumL = (px[iL] * 299 + px[iL+1] * 587 + px[iL+2] * 114) / 1000;
+      const lumR = (px[iR] * 299 + px[iR+1] * 587 + px[iR+2] * 114) / 1000;
+      const grad = Math.abs(lum0 - lum1) + Math.abs(lumL - lumR) * 0.5;
+      if (grad > 28) { edgeRow = row; break; }
+    }
+
+    // targetY: the Y in UV space (0=bottom,1=top) of the detected surface
+    // edgeRow=0 is top of image → UV y=1; edgeRow=H-1 → UV y=0
+    const targetY = edgeRow >= 0 ? 1.0 - (edgeRow / H) : 0.0;
+
+    // ── Accumulate snow gradually toward the surface ──
+    if (edgeRow >= 0) {
+      const diff = targetY - snowHeights[col];
+      snowHeights[col] += diff * 0.04; // slow settle
+    } else {
+      // No surface detected — pile melts away slowly
+      snowHeights[col] *= 0.985;
+    }
+
+    // ── Hand disturbance ──
+    const dx   = cx - handX;
+    const dist = Math.sqrt(dx * dx + (0.0)); // 1D proximity along X
+    const proximity = Math.max(0, 1.0 - Math.abs(dx) / distRadius);
+
+    if (mouseSpeed > 0.003 && proximity > 0) {
+      // Disturb proportional to speed × proximity
+      snowDisturb[col] = Math.min(1.0, snowDisturb[col] + mouseSpeed * proximity * 6.0);
+      // Scatter pile — push height down near hand
+      snowHeights[col] *= (1.0 - proximity * mouseSpeed * 4.0);
+      snowHeights[col]  = Math.max(0, snowHeights[col]);
+    }
+
+    // Disturbance decays
+    snowDisturb[col] *= 0.92;
+
+    // ── Pack into RGBA texture strip ──
+    const i = col * 4;
+    snowTexData[i+0] = Math.round(Math.min(1, Math.max(0, snowHeights[col])) * 255);
+    snowTexData[i+1] = Math.round(Math.min(1, Math.max(0, snowDisturb[col])) * 255);
+    snowTexData[i+2] = 0;
+    snowTexData[i+3] = 255;
+  }
+
+  // Upload updated strip to GPU
+  gl.bindTexture(gl.TEXTURE_2D, snowAccumTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, SNOW_COLS, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, snowTexData);
 }
 
 function render(ts) {
@@ -876,11 +1035,20 @@ function render(ts) {
     canvas.height = H;
   }
 
+  // Mouse speed (decays each frame)
+  mouseSpeed *= 0.82;
+
   if (video && video.readyState >= 2) {
+    gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, videoTexture);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  }
+
+  // Run snow accumulation sim only when snowfall filter is active
+  if (currentFilter === SNOW_FILTER_IDX) {
+    updateSnowAccumulation();
   }
 
   gl.viewport(0, 0, canvas.width, canvas.height);
@@ -892,10 +1060,19 @@ function render(ts) {
   if (uTime)       gl.uniform1f(uTime, ts * 0.001);
   if (uMouse)      gl.uniform2f(uMouse, mouseX, mouseY);
   if (uResolution) gl.uniform2f(uResolution, canvas.width, canvas.height);
+  if (uMouseSpeed) gl.uniform1f(uMouseSpeed, mouseSpeed);
+
+  // Texture unit 0 — video
   if (uTex) {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, videoTexture);
     gl.uniform1i(uTex, 0);
+  }
+  // Texture unit 1 — snow accumulation strip
+  if (uSnowTex) {
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, snowAccumTex);
+    gl.uniform1i(uSnowTex, 1);
   }
 
   const posLoc = gl.getAttribLocation(program, 'a_position');
@@ -1007,11 +1184,16 @@ document.getElementById('btn-start').addEventListener('click', async () => {
   }
 });
 
-// Mouse tracking
+// Mouse tracking with velocity
 canvas.addEventListener('mousemove', e => {
   const rect = canvas.getBoundingClientRect();
-  mouseX = (e.clientX - rect.left) / rect.width;
-  mouseY = 1.0 - (e.clientY - rect.top) / rect.height;
+  const nx = (e.clientX - rect.left) / rect.width;
+  const ny = 1.0 - (e.clientY - rect.top) / rect.height;
+  const dx = nx - mouseX;
+  const dy = ny - mouseY;
+  mouseSpeed = Math.min(1.0, Math.sqrt(dx*dx + dy*dy) * 30.0 + mouseSpeed * 0.5);
+  lastMouseX = mouseX; lastMouseY = mouseY;
+  mouseX = nx; mouseY = ny;
 });
 
 // Buttons

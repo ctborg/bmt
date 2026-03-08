@@ -1464,136 +1464,116 @@ let squishTarget = 0;
 let squishCxTarget = 0.5;
 let squishCyTarget = 0.5;
 
-// Pinch thresholds are now normalised by hand size — see onHandResults
+// Pinch threshold in normalized landmark units
+const PINCH_CLOSE = 0.06;  // fully squished
+const PINCH_OPEN  = 0.18;  // no squish
 
 function initMediaPipe() {
-  // Load pinned MediaPipe Hands (0.4.1646424915 = last stable legacy build)
-  const CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915';
+  // Dynamically load MediaPipe Hands
+  const script1 = document.createElement('script');
+  script1.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js';
+  const script2 = document.createElement('script');
+  script2.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js';
+  script2.crossOrigin = 'anonymous';
 
-  function loadScript(src) {
-    return new Promise((res, rej) => {
-      const s = document.createElement('script');
-      s.src = src; s.crossOrigin = 'anonymous';
-      s.onload = res; s.onerror = rej;
-      document.head.appendChild(s);
-    });
-  }
-
-  loadScript(`${CDN}/hands.js`).then(() => {
+  script2.onload = () => {
     const hands = new Hands({
-      locateFile: file => `${CDN}/${file}`
+      locateFile: file =>
+        `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
     });
 
     hands.setOptions({
       maxNumHands: 2,
-      modelComplexity: 0,
-      minDetectionConfidence: 0.6,
+      modelComplexity: 0,       // lite model — fastest, fine for gesture
+      minDetectionConfidence: 0.7,
       minTrackingConfidence:  0.5,
     });
 
     hands.onResults(onHandResults);
 
-    // initialize() downloads WASM + model weights — must await before sending frames
-    hands.initialize().then(() => {
-      console.log('[HandSquish] MediaPipe ready');
-
-      let lastMPFrame = 0;
-      function sendFrame(ts) {
-        requestAnimationFrame(sendFrame);
-        if (!video || video.readyState < 2) return;
-
-        // Always decay when not on squish filter
-        if (currentFilter !== SQUISH_FILTER_IDX) {
-          squishAmount *= 0.85;
-          return;
-        }
-
-        if (ts - lastMPFrame < 50) return; // ~20 fps
-        lastMPFrame = ts;
-        hands.send({ image: video }).catch(() => {});
-      }
+    // Poll video frames into MediaPipe — throttled to ~20fps to save CPU
+    let lastMPFrame = 0;
+    function sendFrame(ts) {
       requestAnimationFrame(sendFrame);
-    }).catch(e => console.warn('[HandSquish] init failed:', e));
-  }).catch(e => console.warn('[HandSquish] script load failed:', e));
+      if (!video || video.readyState < 2) return;
+      if (currentFilter !== SQUISH_FILTER_IDX) {
+        // When not on squish filter, decay smoothly to zero and skip MP
+        squishTarget = 0;
+        squishAmount += (squishTarget - squishAmount) * 0.12;
+        return;
+      }
+      if (ts - lastMPFrame < 48) return; // ~20fps
+      lastMPFrame = ts;
+      hands.send({ image: video });
+    }
+    requestAnimationFrame(sendFrame);
+  };
+
+  document.head.appendChild(script1);
+  document.head.appendChild(script2);
 }
 
 function onHandResults(results) {
+  // Sync overlay canvas size to display canvas
   handOverlay.width  = canvas.clientWidth;
   handOverlay.height = canvas.clientHeight;
   hCtx.clearRect(0, 0, handOverlay.width, handOverlay.height);
 
   if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
     squishTarget = 0;
-    squishAmount *= 0.88; // smooth decay
+    squishAmount += (0 - squishAmount) * 0.10;
     return;
   }
 
   let bestPinch = 0;
-  let bestCx = 0.5, bestCy = 0.5, bestSpan = 0.25;
+  let bestCx = 0.5, bestCy = 0.5, bestSpan = 0.2;
 
   for (const landmarks of results.multiHandLandmarks) {
-    const thumb = landmarks[4];  // thumb tip
-    const index = landmarks[8];  // index tip
+    // MediaPipe landmark indices:
+    // 4 = thumb tip, 8 = index finger tip
+    // 0 = wrist, 5 = index MCP, 17 = pinky MCP
+    const thumb = landmarks[4];
+    const index = landmarks[8];
     const wrist = landmarks[0];
-    const mcp   = landmarks[9];  // middle finger MCP — palm center proxy
 
-    // Raw (un-mirrored) pinch distance in landmark space
-    const pinchDist = Math.sqrt(
-      (thumb.x - index.x) ** 2 +
-      (thumb.y - index.y) ** 2
-    );
+    // Mirror X to match our mirrored video feed
+    const tx = 1 - thumb.x, ty = thumb.y;
+    const ix = 1 - index.x, iy = index.y;
+    const wx = 1 - wrist.x, wy = wrist.y;
 
-    // Normalise by hand size (wrist→middle-MCP distance) so distance works
-    // regardless of how far the hand is from camera
-    const handSize = Math.sqrt(
-      (wrist.x - mcp.x) ** 2 +
-      (wrist.y - mcp.y) ** 2
-    ) || 0.1;
+    // Pinch distance (normalized 0..1 landmark space)
+    const pinchDist = Math.sqrt((tx - ix) ** 2 + (ty - iy) ** 2);
 
-    const normDist = pinchDist / handSize;
-
-    // normDist ~0 = fully pinched, ~1+ = open hand
-    const pinchStrength = Math.max(0, Math.min(1,
-      1 - (normDist - 0.1) / (0.6 - 0.1)
+    // Map distance to squish amount: closer = more squish
+    const pinchStrength = 1 - Math.min(1, Math.max(0,
+      (pinchDist - PINCH_CLOSE) / (PINCH_OPEN - PINCH_CLOSE)
     ));
 
     if (pinchStrength > bestPinch) {
       bestPinch = pinchStrength;
-
-      // Squish CENTER X = midpoint of pinch, mirrored to match video
-      bestCx = 1 - (thumb.x + index.x) / 2;
-
-      // Squish CENTER Y = the pinch midpoint Y — user holds hand over head
-      // so pinch Y is roughly where the head top is
-      bestCy = (thumb.y + index.y) / 2;
-
-      // Span: generous fixed band so the whole head gets squished
-      bestSpan = 0.30;
+      // Center of squish: midpoint between thumb and index, X only
+      bestCx = (tx + ix) / 2;
+      // Vertical band: wrist Y defines bottom of head, squish at hand height
+      bestCy = (ty + iy) / 2;
+      // Span: distance from pinch midpoint to wrist = rough head height
+      bestSpan = Math.abs(wy - bestCy) * 0.8 + 0.08;
     }
 
+    // Draw hand skeleton overlay
     drawHand(landmarks, pinchStrength);
   }
 
-  squishTarget   = bestPinch;
-  squishCxTarget = bestCx;
-  squishCyTarget = bestCy;
-  squishSpan     = bestSpan;
+  squishTarget    = bestPinch;
+  squishCxTarget  = bestCx;
+  squishCyTarget  = bestCy;
+  squishSpan      = bestSpan;
 
-  // Smooth toward targets
-  const rate = squishTarget > squishAmount ? 0.20 : 0.12;
-  squishAmount += (squishTarget  - squishAmount)  * rate;
-  squishCx     += (squishCxTarget - squishCx)     * 0.25;
-  squishCy     += (squishCyTarget - squishCy)     * 0.25;
-
-  // Signal model is ready
-  if (window._mpReady) { window._mpReady(); window._mpReady = null; }
-
-  // Debug: show squish value in filter name overlay when active
-  if (currentFilter === SQUISH_FILTER_IDX) {
-    const pct = Math.round(squishAmount * 100);
-    document.getElementById('filter-name-overlay').textContent =
-      `HEAD SQUISH${pct > 2 ? ' — ' + pct + '%' : ''}`;
-  }
+  // Smooth the squish values
+  const lerpRate = squishTarget > squishAmount ? 0.18 : 0.10;
+  squishAmount += (squishTarget  - squishAmount)  * lerpRate;
+  squishCx     += (squishCxTarget - squishCx)     * 0.2;
+  squishCy     += (squishCyTarget - squishCy)     * 0.2;
+}
 
 function drawHand(landmarks, pinchStrength) {
   const W = handOverlay.width;
@@ -1670,17 +1650,13 @@ function updateSquishHint() {
       letter-spacing: 0.1em; text-transform: uppercase;
       color: rgba(232,255,71,0.7); background: rgba(10,10,12,0.75);
       padding: 4px 10px; border-radius: 2px; pointer-events: none;
-      white-space: nowrap; z-index: 6; transition: opacity 0.3s;
+      white-space: nowrap; z-index: 6;
+      transition: opacity 0.3s;
     `;
+    hint.textContent = '🤏 Pinch over your head to squish';
     document.querySelector('.stage').appendChild(hint);
   }
   hint.style.opacity = isSquish ? '1' : '0';
-  hint.textContent = '🤏 Pinch over your head to squish — loading model...';
-
-  // Update hint text once MP fires its first result
-  window._mpReady = () => {
-    if (hint) hint.textContent = '🤏 Pinch over your head to squish';
-  };
 }
 
 // Hook into selectFilter to show/hide hint and clear overlay

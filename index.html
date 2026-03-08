@@ -479,87 +479,134 @@ void main(){
     emoji: "❄️",
     frag: `
 precision mediump float;
-uniform sampler2D u_tex;       // live camera
-uniform sampler2D u_snow_tex;  // 1D accumulation strip (width x 1)
+uniform sampler2D u_tex;
+uniform sampler2D u_snow_tex;  // R=surfaceY, G=amount(0..1), B=disturbance
 uniform float u_time;
 uniform vec2 u_resolution;
 uniform vec2 u_mouse;
-uniform float u_mouse_speed;   // hand velocity magnitude
+uniform float u_mouse_speed;
 varying vec2 v_uv;
 
 float rand(vec2 n){ return fract(sin(dot(n, vec2(12.9898,78.233)))*43758.5453); }
 float rand1(float n){ return fract(sin(n*127.1)*43758.5453); }
+
+// Smooth noise for organic bumpy snow surface
+float noise(float x){
+  float i = floor(x);
+  float f = fract(x);
+  float u = f*f*(3.0-2.0*f);
+  return mix(rand1(i), rand1(i+1.0), u);
+}
 
 void main(){
   vec2 uv = v_uv;
   uv.x = 1.0 - uv.x;
   vec3 video = texture2D(u_tex, uv).rgb;
 
+  // ── Sample snow data for this column ───────────────────
+  vec3 snowData = texture2D(u_snow_tex, vec2(uv.x, 0.5)).rgb;
+  float surfaceY = snowData.r;   // top of detected surface (UV y)
+  float amount   = snowData.g;   // how much snow has accumulated 0..1
+  float disturb  = snowData.b;   // hand disturbance
+
+  // Max pile thickness in UV units — scales with amount
+  // At amount=1.0 it's about 3.5% of frame height — a tasteful dusting
+  float maxThick = 0.035 * amount;
+
+  // Bumpy top edge: multi-octave noise along X axis
+  float bumpFreq = uv.x * 180.0;
+  float bump = noise(bumpFreq * 0.7)  * 0.55
+             + noise(bumpFreq * 1.9)  * 0.28
+             + noise(bumpFreq * 4.3)  * 0.12
+             + noise(bumpFreq * 11.0) * 0.05;
+  bump = bump * 2.0 - 1.0; // centre around 0
+
+  // Top of snow pile in UV space (sits just above the surface)
+  float pileTop    = surfaceY + maxThick + bump * maxThick * 0.6;
+  float pileBottom = surfaceY - 0.002;   // tiny bit below surface
+
+  // Signed distance from surface of pile (negative = inside snow)
+  float distFromTop = uv.y - pileTop;
+
+  // Snow opacity — sharp at top, melts into surface below
+  float snowMask = smoothstep(0.003, -0.001, distFromTop)   // top edge
+                 * smoothstep(pileBottom, pileBottom + 0.008, uv.y); // bottom edge
+  snowMask *= smoothstep(0.0, 0.08, amount);  // fade in as amount grows
+  snowMask *= (1.0 - disturb * 0.97);         // swept away by hand
+
+  // ── Snow shading: realistic white with blue shadows ────
+  // Depth within the pile (0=surface, 1=deep)
+  float depth = clamp((pileTop - uv.y) / max(maxThick, 0.001), 0.0, 1.0);
+
+  // Base snow color — bright white at surface, blue-shadow in crevices
+  vec3 snowSurface = vec3(0.96, 0.97, 1.00);  // slightly warm white at top
+  vec3 snowShadow  = vec3(0.55, 0.68, 0.88);  // cool blue deep in pile
+  vec3 snowCol     = mix(snowSurface, snowShadow, depth * depth * 0.7);
+
+  // Subsurface scatter: thin edges let light bleed through (warm translucency)
+  float thinness = 1.0 - smoothstep(0.0, maxThick * 0.5, maxThick * (1.0-depth));
+  vec3  scatter  = video * vec3(0.9, 0.95, 1.1) * 0.35;
+  snowCol = mix(snowCol, snowCol + scatter, thinness * 0.4);
+
+  // Specular glint on surface bumps — tiny bright highlights
+  float bumpDeriv = noise(bumpFreq * 0.7 + 0.5) - noise(bumpFreq * 0.7 - 0.5);
+  float specular  = pow(max(0.0, 1.0 - abs(bumpDeriv) * 8.0), 6.0);
+  float glintAnim = step(0.97, rand(vec2(uv.x * 80.0, floor(u_time * 5.0))));
+  snowCol += vec3(1.0) * specular * 0.5 * (0.6 + 0.4 * glintAnim);
+
   // ── Falling flakes ──────────────────────────────────────
   vec2 aspect = vec2(u_resolution.x / u_resolution.y, 1.0);
   vec2 suv = v_uv * aspect;
   float fallingSnow = 0.0;
   for(float i = 0.0; i < 5.0; i++){
-    float speed     = 0.06 + i * 0.04;
-    float gridSize  = 14.0 + i * 7.0;
-    float drift     = sin(u_time * 0.25 + i * 1.9) * 0.07;
-    vec2 cell = floor(suv * gridSize + vec2(drift, u_time * speed * gridSize));
-    vec2 fr   = fract(suv * gridSize + vec2(drift, u_time * speed * gridSize));
+    float speed    = 0.05 + i * 0.035;
+    float gridSize = 12.0 + i * 8.0;
+    float wobble   = sin(u_time * 0.8 + i * 2.3) * 0.04
+                   + cos(u_time * 0.5 + i * 1.1) * 0.03;
+    vec2 cell = floor(suv * gridSize + vec2(wobble, u_time * speed * gridSize));
+    vec2 fr   = fract(suv * gridSize + vec2(wobble, u_time * speed * gridSize));
     float r = rand(cell + i * 31.7);
-    if(r > 0.82){
-      float sz      = 0.10 + rand(cell + 77.0) * 0.20;
-      float twinkle = 0.8 + 0.2 * sin(u_time * 4.0 + r * 80.0);
-      float d       = length(fr - 0.5);
-      fallingSnow   = max(fallingSnow, smoothstep(sz, sz*0.25, d) * twinkle);
+    if(r > 0.84){
+      float sz = 0.08 + rand(cell + 77.0) * 0.18;
+      // Flake shape: soft disc with slight star-like crosshair
+      float d  = length(fr - 0.5);
+      float cross = min(abs(fr.x-0.5), abs(fr.y-0.5)) * 6.0;
+      float flake = smoothstep(sz, sz*0.2, d) * (0.85 + 0.15 * smoothstep(0.6, 0.0, cross));
+      float twinkle = 0.75 + 0.25 * sin(u_time * 6.0 + r * 50.0);
+      fallingSnow = max(fallingSnow, flake * twinkle);
     }
   }
+  // Flakes are brighter where less snow pile (they land and disappear)
+  fallingSnow *= (1.0 - snowMask * 0.8);
 
-  // ── Accumulated snow on surfaces ───────────────────────
-  // u_snow_tex encodes per-column: R = pile height (0..1), G = disturbance
-  float colX      = uv.x; // already mirrored
-  vec2  snowData  = texture2D(u_snow_tex, vec2(colX, 0.5)).rg;
-  float pileHeight = snowData.r;   // fraction from bottom of pile
-  float disturb    = snowData.g;   // 0=calm,1=disturbed
-
-  // The pile sits ON TOP of detected surfaces — uv.y is 0=bottom,1=top
-  // pileHeight is stored as the Y position of the surface top
-  float aboveSurface = uv.y - pileHeight;          // >0 means above surface
-  float pileThickness = 0.018 + 0.012 * rand(vec2(colX * 43.7, 0.5)); // fluffy edge
-  float accumSnow = smoothstep(pileThickness, -0.003, aboveSurface);
-  accumSnow *= smoothstep(0.0, 0.04, pileHeight);  // only where pile exists
-  accumSnow *= (1.0 - disturb * 0.92);             // hand wipes it away
-
-  // Sparkle on pile surface
-  float surfaceBand = smoothstep(0.003, 0.0, abs(aboveSurface));
-  float sparkle = rand(vec2(colX * 200.0, floor(u_time * 8.0))) > 0.94 ? 1.0 : 0.0;
-  sparkle *= surfaceBand * 2.0;
-
-  // ── Dust particles blown by hand ───────────────────────
+  // ── Dust scatter from hand ──────────────────────────────
   float dustSnow = 0.0;
-  if(u_mouse_speed > 0.003){
-    vec2 mpos = vec2(1.0 - u_mouse.x, 1.0 - u_mouse.y); // mirror to match video
-    float proximity = 1.0 - smoothstep(0.0, 0.35, length(uv - mpos));
-    // Animated dust cloud near cursor
-    for(float d = 0.0; d < 4.0; d++){
-      float angle = rand1(d * 13.7 + floor(u_time*15.0)) * 6.2831;
-      float radius = 0.04 + rand1(d * 7.3) * 0.09;
-      vec2 dustPos  = mpos + vec2(cos(angle), sin(angle)) * radius;
-      float dp      = length(uv - dustPos);
-      dustSnow      = max(dustSnow, smoothstep(0.022, 0.002, dp) * proximity * u_mouse_speed * 18.0);
+  if(u_mouse_speed > 0.004){
+    vec2 mpos = vec2(1.0 - u_mouse.x, 1.0 - u_mouse.y);
+    for(float d = 0.0; d < 6.0; d++){
+      float t      = fract(u_time * (0.6 + d * 0.15) + rand1(d * 9.3));
+      float angle  = rand1(d * 5.1 + floor(u_time*8.0)) * 6.2831;
+      float radius = 0.02 + t * 0.14;
+      float life   = smoothstep(1.0, 0.3, t); // fade out as particle travels
+      vec2 dustPos = mpos + vec2(cos(angle), sin(angle) * 0.5) * radius;
+      float dp     = length(uv - dustPos);
+      float ps     = 0.006 + rand1(d) * 0.008;
+      dustSnow     = max(dustSnow, smoothstep(ps, 0.0, dp) * life * u_mouse_speed * 6.0);
     }
     dustSnow = clamp(dustSnow, 0.0, 1.0);
   }
 
   // ── Composite ──────────────────────────────────────────
-  vec3 snowColor   = vec3(0.93, 0.97, 1.00);
-  vec3 sparkColor  = vec3(1.00, 1.00, 1.00);
-  video = mix(video, video * vec3(0.82, 0.88, 1.06), 0.28); // cold tint
+  // Cold blue tint on whole scene
+  video = mix(video, video * vec3(0.84, 0.90, 1.07), 0.22);
+
   vec3 col = video;
-  col = mix(col, snowColor, accumSnow);
-  col = mix(col, snowColor * 1.3, fallingSnow * 0.9);
-  col = mix(col, snowColor * 1.2, dustSnow);
-  col += sparkColor * sparkle * 0.6;
-  col  = clamp(col, 0.0, 1.0);
+  col = mix(col, snowCol, snowMask);
+  // Falling flakes: slightly blue-white, semi-transparent
+  col = mix(col, vec3(0.94, 0.97, 1.0) * 1.05, fallingSnow * 0.85);
+  // Dust: brighter white puffs
+  col = mix(col, vec3(0.98, 0.99, 1.0), dustSnow);
+  col = clamp(col, 0.0, 1.0);
   gl_FragColor = vec4(col, 1.0);
 }`
   },
@@ -830,13 +877,15 @@ let lastFrame = 0, frameCount = 0, fps = 0;
 let animId = null;
 
 // Snow accumulation system
-const SNOW_COLS = 256; // resolution of accumulation strip
+const SNOW_COLS = 256;
 let snowAccumTex = null;
-let snowHeights  = new Float32Array(SNOW_COLS); // pile top Y per column (0=none)
-let snowDisturb  = new Float32Array(SNOW_COLS); // disturbance per column
-let snowTexData  = new Uint8Array(SNOW_COLS * 4); // RGBA strip uploaded to GPU
-// Offscreen canvas for edge-detecting the video each frame
-let edgeCanvas, edgeCtx, edgeData;
+let snowSurface  = new Float32Array(SNOW_COLS); // Y position of detected surface (UV space)
+let snowAmount   = new Float32Array(SNOW_COLS); // accumulated depth 0..1 (grows slowly)
+let snowDisturb  = new Float32Array(SNOW_COLS); // disturbance 0..1
+let snowTexData  = new Uint8Array(SNOW_COLS * 4);
+let edgeCanvas, edgeCtx;
+// Stable surface tracking — require consistent detection before accepting
+let surfaceVotes = new Float32Array(SNOW_COLS); // smoothed detected edge Y
 
 const canvas = document.getElementById('glcanvas');
 
@@ -932,7 +981,7 @@ const SNOW_FILTER_IDX = 2; // index of Snowfall in FILTERS array
 function updateSnowAccumulation() {
   if (!video || video.readyState < 2) return;
 
-  // Draw mirrored video into tiny offscreen canvas for edge sampling
+  // Draw mirrored video into offscreen canvas
   edgeCtx.save();
   edgeCtx.translate(edgeCanvas.width, 0);
   edgeCtx.scale(-1, 1);
@@ -944,73 +993,86 @@ function updateSnowAccumulation() {
   const H  = edgeCanvas.height;
   const W  = SNOW_COLS;
 
-  // Hand disturbance: mouse position & speed
-  // mouseX/Y are in 0..1 canvas space (already mirrored for display)
-  const handX     = mouseX; // mirrored match
-  const handY     = 1.0 - mouseY;
-  const distRadius = 0.12 + mouseSpeed * 1.5; // bigger radius when moving fast
+  const handX      = mouseX;
+  const distRadius = 0.10 + mouseSpeed * 1.2;
 
+  // ── Pass 1: detect surfaces, update snowAmount ──────────────────
   for (let col = 0; col < W; col++) {
     const cx = col / W;
 
-    // ── Find topmost significant edge in this column (top-down scan) ──
-    // We look for the highest pixel row where luminance contrast is high
-    // That corresponds to the top of a head / eyebrow / shoulder
+    // Find topmost edge by scanning top-down
     let edgeRow = -1;
-    for (let row = 0; row < H - 1; row++) {
-      const i0 = (row * W + col) * 4;
-      const i1 = ((row + 1) * W + col) * 4;
-      const lum0 = (px[i0] * 299 + px[i0+1] * 587 + px[i0+2] * 114) / 1000;
-      const lum1 = (px[i1] * 299 + px[i1+1] * 587 + px[i1+2] * 114) / 1000;
-      // Also check horizontal neighbours for better edge robustness
-      const colL = Math.max(0, col - 1);
-      const colR = Math.min(W - 1, col + 1);
-      const iL   = (row * W + colL) * 4;
-      const iR   = (row * W + colR) * 4;
-      const lumL = (px[iL] * 299 + px[iL+1] * 587 + px[iL+2] * 114) / 1000;
-      const lumR = (px[iR] * 299 + px[iR+1] * 587 + px[iR+2] * 114) / 1000;
-      const grad = Math.abs(lum0 - lum1) + Math.abs(lumL - lumR) * 0.5;
-      if (grad > 28) { edgeRow = row; break; }
+    for (let row = 1; row < H - 1; row++) {
+      const above = (row - 1) * W + col;
+      const below = (row + 1) * W + col;
+      const lumA = (px[above*4]*299 + px[above*4+1]*587 + px[above*4+2]*114) / 1000;
+      const lumB = (px[below*4]*299 + px[below*4+1]*587 + px[below*4+2]*114) / 1000;
+      // Horizontal gradient too
+      const colL = Math.max(0, col-2), colR = Math.min(W-1, col+2);
+      const lumL = (px[(row*W+colL)*4]*299 + px[(row*W+colL)*4+1]*587 + px[(row*W+colL)*4+2]*114)/1000;
+      const lumR = (px[(row*W+colR)*4]*299 + px[(row*W+colR)*4+1]*587 + px[(row*W+colR)*4+2]*114)/1000;
+      const grad = Math.abs(lumB - lumA) * 1.5 + Math.abs(lumR - lumL) * 0.8;
+      if (grad > 22) { edgeRow = row; break; }
     }
 
-    // targetY: the Y in UV space (0=bottom,1=top) of the detected surface
-    // edgeRow=0 is top of image → UV y=1; edgeRow=H-1 → UV y=0
-    const targetY = edgeRow >= 0 ? 1.0 - (edgeRow / H) : 0.0;
-
-    // ── Accumulate snow gradually toward the surface ──
+    // Smooth the surface position with a very slow lerp — prevents jitter
     if (edgeRow >= 0) {
-      const diff = targetY - snowHeights[col];
-      snowHeights[col] += diff * 0.04; // slow settle
+      const detectedY = 1.0 - (edgeRow / H);
+      // Only update if detected surface is in a plausible range (top 80% of frame = head area)
+      if (detectedY > 0.2) {
+        surfaceVotes[col] += (detectedY - surfaceVotes[col]) * 0.08;
+      }
     } else {
-      // No surface detected — pile melts away slowly
-      snowHeights[col] *= 0.985;
+      // No edge — surface slowly fades out
+      surfaceVotes[col] *= 0.99;
     }
 
-    // ── Hand disturbance ──
-    const dx   = cx - handX;
-    const dist = Math.sqrt(dx * dx + (0.0)); // 1D proximity along X
+    snowSurface[col] = surfaceVotes[col];
+
+    // ── Snow amount: grows VERY slowly, only when surface is stable ──
+    // Each frame at 60fps: +0.00015 → takes ~110 seconds to reach 1.0 (full pile)
+    // But capped at a max visual depth so it looks like a realistic dusting
+    if (snowSurface[col] > 0.15) {
+      // Tiny probabilistic growth — not every frame, feels more organic
+      if (Math.random() < 0.25) { // only grow 25% of frames
+        snowAmount[col] = Math.min(1.0, snowAmount[col] + 0.00022);
+      }
+    } else {
+      snowAmount[col] *= 0.998; // very slow melt when no surface
+    }
+
+    // ── Hand disturbance ──────────────────────────────────────────
+    const dx = cx - handX;
     const proximity = Math.max(0, 1.0 - Math.abs(dx) / distRadius);
 
-    if (mouseSpeed > 0.003 && proximity > 0) {
-      // Disturb proportional to speed × proximity
-      snowDisturb[col] = Math.min(1.0, snowDisturb[col] + mouseSpeed * proximity * 6.0);
-      // Scatter pile — push height down near hand
-      snowHeights[col] *= (1.0 - proximity * mouseSpeed * 4.0);
-      snowHeights[col]  = Math.max(0, snowHeights[col]);
+    if (mouseSpeed > 0.005 && proximity > 0) {
+      const wipe = proximity * mouseSpeed * 3.5;
+      snowDisturb[col] = Math.min(1.0, snowDisturb[col] + wipe);
+      // Actually remove snow — scatter it away proportional to wipe strength
+      snowAmount[col] = Math.max(0, snowAmount[col] - wipe * 0.6);
     }
 
-    // Disturbance decays
-    snowDisturb[col] *= 0.92;
+    // Disturbance decays back to calm
+    snowDisturb[col] *= 0.88;
+  }
 
-    // ── Pack into RGBA texture strip ──
+  // ── Pass 2: lateral spread — snow slumps sideways slightly ────────
+  const spreadRate = 0.0008;
+  for (let col = 1; col < W - 1; col++) {
+    const diff = (snowAmount[col-1] + snowAmount[col+1]) * 0.5 - snowAmount[col];
+    if (diff > 0) snowAmount[col] += diff * spreadRate;
+  }
+
+  // ── Pack into texture ─────────────────────────────────────────────
+  for (let col = 0; col < W; col++) {
     const i = col * 4;
-    snowTexData[i+0] = Math.round(Math.min(1, Math.max(0, snowHeights[col])) * 255);
-    snowTexData[i+1] = Math.round(Math.min(1, Math.max(0, snowDisturb[col])) * 255);
-    snowTexData[i+2] = 0;
+    // R = surface Y position, G = snow depth/amount, B = disturbance
+    snowTexData[i+0] = Math.round(Math.min(1, Math.max(0, snowSurface[col])) * 255);
+    snowTexData[i+1] = Math.round(Math.min(1, Math.max(0, snowAmount[col]))  * 255);
+    snowTexData[i+2] = Math.round(Math.min(1, Math.max(0, snowDisturb[col])) * 255);
     snowTexData[i+3] = 255;
   }
 
-  // Upload updated strip to GPU
   gl.bindTexture(gl.TEXTURE_2D, snowAccumTex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, SNOW_COLS, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, snowTexData);
 }

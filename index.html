@@ -935,13 +935,62 @@ void main(){
   gl_FragColor = vec4(meanBest, 1.0);
 }`
   },
-];
+  {
+    name: "Head Squish",
+    emoji: "🤏",
+    frag: `
+precision mediump float;
+uniform sampler2D u_tex;
+uniform float u_time;
+uniform vec2  u_resolution;
+uniform float u_squish;      // 0=none, 1=full squish
+uniform float u_squish_cx;   // pinch center X (0..1, mirrored)
+uniform float u_squish_cy;   // pinch center Y (0..1)
+uniform float u_squish_span; // vertical band half-width (0..1)
+varying vec2 v_uv;
 
-// ─────────────────────────────────────────────
-//  WEBGL SETUP
+void main(){
+  vec2 uv = v_uv;
+  uv.x = 1.0 - uv.x; // mirror
+
+  // How far this pixel is from the squish center Y, within the band
+  float dy     = abs(uv.y - u_squish_cy);
+  float span   = max(u_squish_span, 0.05);
+  // Falloff: cosine envelope — full effect at center, zero at band edges
+  float weight = smoothstep(span, 0.0, dy);
+  weight = weight * weight; // sharpen falloff
+
+  // Horizontal stretch: pull UVs toward/away from center X
+  // squish > 0 → squeeze (stretch wide) → map wider content into view
+  float cx = u_squish_cx;
+  // squish=1 means sample 2x the horizontal range → head looks 2x wide
+  float stretch = 1.0 + u_squish * 1.6 * weight;
+  uv.x = cx + (uv.x - cx) / stretch;
+
+  // Slight vertical compression to conserve "volume" (feels more physical)
+  float vCompress = 1.0 + u_squish * 0.25 * weight;
+  uv.y = u_squish_cy + (uv.y - u_squish_cy) * vCompress;
+
+  uv = clamp(uv, 0.001, 0.999);
+  vec3 col = texture2D(u_tex, uv).rgb;
+
+  // Subtle color fringe at squish edge (chromatic aberration from pressure)
+  if(u_squish > 0.05){
+    float fringeAmt = u_squish * weight * 0.006;
+    vec2 uvR = clamp(vec2(cx + (uv.x - cx) + fringeAmt, uv.y), 0.001, 0.999);
+    vec2 uvB = clamp(vec2(cx + (uv.x - cx) - fringeAmt, uv.y), 0.001, 0.999);
+    col.r = texture2D(u_tex, vec2(1.0 - uvR.x, uvR.y)).r;
+    col.b = texture2D(u_tex, vec2(1.0 - uvB.x, uvB.y)).b;
+  }
+
+  gl_FragColor = vec4(col, 1.0);
+}`
+  },
+];
 // ─────────────────────────────────────────────
 let gl, program, posBuffer, texLocation;
 let uTime, uMouse, uResolution, uTex, uSnowTex, uMouseSpeed;
+let uSquish, uSquishCx, uSquishCy, uSquishSpan;
 let video, videoTexture;
 let currentFilter = 0;
 let programs = [];
@@ -950,6 +999,12 @@ let lastMouseX = 0.5, lastMouseY = 0.5;
 let mouseSpeed = 0;
 let lastFrame = 0, frameCount = 0, fps = 0;
 let animId = null;
+
+// Head squish state (driven by MediaPipe)
+let squishAmount = 0;    // 0..1, smoothed
+let squishCx     = 0.5; // pinch center X
+let squishCy     = 0.5; // pinch center Y
+let squishSpan   = 0.2; // vertical band half-width
 
 // Snow accumulation system
 const SNOW_COLS = 256;
@@ -1037,6 +1092,10 @@ function setProgram(idx) {
   uTex        = gl.getUniformLocation(program, 'u_tex');
   uSnowTex    = gl.getUniformLocation(program, 'u_snow_tex');
   uMouseSpeed = gl.getUniformLocation(program, 'u_mouse_speed');
+  uSquish     = gl.getUniformLocation(program, 'u_squish');
+  uSquishCx   = gl.getUniformLocation(program, 'u_squish_cx');
+  uSquishCy   = gl.getUniformLocation(program, 'u_squish_cy');
+  uSquishSpan = gl.getUniformLocation(program, 'u_squish_span');
 }
 
 function initVideoTexture() {
@@ -1199,6 +1258,10 @@ function render(ts) {
   if (uMouse)      gl.uniform2f(uMouse, mouseX, mouseY);
   if (uResolution) gl.uniform2f(uResolution, canvas.width, canvas.height);
   if (uMouseSpeed) gl.uniform1f(uMouseSpeed, mouseSpeed);
+  if (uSquish)     gl.uniform1f(uSquish,     squishAmount);
+  if (uSquishCx)   gl.uniform1f(uSquishCx,   squishCx);
+  if (uSquishCy)   gl.uniform1f(uSquishCy,   squishCy);
+  if (uSquishSpan) gl.uniform1f(uSquishSpan, squishSpan);
 
   // Texture unit 0 — video
   if (uTex) {
@@ -1319,6 +1382,9 @@ document.getElementById('btn-start').addEventListener('click', async () => {
     // Hide permission screen
     document.getElementById('permission-screen').style.display = 'none';
 
+    // Start MediaPipe hand tracking
+    initMediaPipe();
+
     requestAnimationFrame(render);
   } catch(e) {
     console.error(e);
@@ -1375,6 +1441,235 @@ document.getElementById('lightbox').addEventListener('click', e => {
     document.getElementById('lightbox').classList.remove('open');
   }
 });
+
+// ─────────────────────────────────────────────
+//  MEDIAPIPE HANDS — HEAD SQUISHER
+// ─────────────────────────────────────────────
+const SQUISH_FILTER_IDX = FILTERS.length - 1; // last filter added
+
+// Overlay canvas for drawing hand landmarks on top of WebGL canvas
+const handOverlay = document.createElement('canvas');
+handOverlay.style.cssText = `
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 5;
+`;
+document.querySelector('.stage').appendChild(handOverlay);
+const hCtx = handOverlay.getContext('2d');
+
+// Smoothed squish target
+let squishTarget = 0;
+let squishCxTarget = 0.5;
+let squishCyTarget = 0.5;
+
+// Pinch threshold in normalized landmark units
+const PINCH_CLOSE = 0.06;  // fully squished
+const PINCH_OPEN  = 0.18;  // no squish
+
+function initMediaPipe() {
+  // Dynamically load MediaPipe Hands
+  const script1 = document.createElement('script');
+  script1.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js';
+  const script2 = document.createElement('script');
+  script2.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js';
+  script2.crossOrigin = 'anonymous';
+
+  script2.onload = () => {
+    const hands = new Hands({
+      locateFile: file =>
+        `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 0,       // lite model — fastest, fine for gesture
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence:  0.5,
+    });
+
+    hands.onResults(onHandResults);
+
+    // Poll video frames into MediaPipe — throttled to ~20fps to save CPU
+    let lastMPFrame = 0;
+    function sendFrame(ts) {
+      requestAnimationFrame(sendFrame);
+      if (!video || video.readyState < 2) return;
+      if (currentFilter !== SQUISH_FILTER_IDX) {
+        // When not on squish filter, decay smoothly to zero and skip MP
+        squishTarget = 0;
+        squishAmount += (squishTarget - squishAmount) * 0.12;
+        return;
+      }
+      if (ts - lastMPFrame < 48) return; // ~20fps
+      lastMPFrame = ts;
+      hands.send({ image: video });
+    }
+    requestAnimationFrame(sendFrame);
+  };
+
+  document.head.appendChild(script1);
+  document.head.appendChild(script2);
+}
+
+function onHandResults(results) {
+  // Sync overlay canvas size to display canvas
+  handOverlay.width  = canvas.clientWidth;
+  handOverlay.height = canvas.clientHeight;
+  hCtx.clearRect(0, 0, handOverlay.width, handOverlay.height);
+
+  if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+    squishTarget = 0;
+    squishAmount += (0 - squishAmount) * 0.10;
+    return;
+  }
+
+  let bestPinch = 0;
+  let bestCx = 0.5, bestCy = 0.5, bestSpan = 0.2;
+
+  for (const landmarks of results.multiHandLandmarks) {
+    // MediaPipe landmark indices:
+    // 4 = thumb tip, 8 = index finger tip
+    // 0 = wrist, 5 = index MCP, 17 = pinky MCP
+    const thumb = landmarks[4];
+    const index = landmarks[8];
+    const wrist = landmarks[0];
+
+    // Mirror X to match our mirrored video feed
+    const tx = 1 - thumb.x, ty = thumb.y;
+    const ix = 1 - index.x, iy = index.y;
+    const wx = 1 - wrist.x, wy = wrist.y;
+
+    // Pinch distance (normalized 0..1 landmark space)
+    const pinchDist = Math.sqrt((tx - ix) ** 2 + (ty - iy) ** 2);
+
+    // Map distance to squish amount: closer = more squish
+    const pinchStrength = 1 - Math.min(1, Math.max(0,
+      (pinchDist - PINCH_CLOSE) / (PINCH_OPEN - PINCH_CLOSE)
+    ));
+
+    if (pinchStrength > bestPinch) {
+      bestPinch = pinchStrength;
+      // Center of squish: midpoint between thumb and index, X only
+      bestCx = (tx + ix) / 2;
+      // Vertical band: wrist Y defines bottom of head, squish at hand height
+      bestCy = (ty + iy) / 2;
+      // Span: distance from pinch midpoint to wrist = rough head height
+      bestSpan = Math.abs(wy - bestCy) * 0.8 + 0.08;
+    }
+
+    // Draw hand skeleton overlay
+    drawHand(landmarks, pinchStrength);
+  }
+
+  squishTarget    = bestPinch;
+  squishCxTarget  = bestCx;
+  squishCyTarget  = bestCy;
+  squishSpan      = bestSpan;
+
+  // Smooth the squish values
+  const lerpRate = squishTarget > squishAmount ? 0.18 : 0.10;
+  squishAmount += (squishTarget  - squishAmount)  * lerpRate;
+  squishCx     += (squishCxTarget - squishCx)     * 0.2;
+  squishCy     += (squishCyTarget - squishCy)     * 0.2;
+}
+
+function drawHand(landmarks, pinchStrength) {
+  const W = handOverlay.width;
+  const H = handOverlay.height;
+
+  // Connection pairs for hand skeleton
+  const connections = [
+    [0,1],[1,2],[2,3],[3,4],       // thumb
+    [0,5],[5,6],[6,7],[7,8],       // index
+    [0,9],[9,10],[10,11],[11,12],  // middle
+    [0,13],[13,14],[14,15],[15,16],// ring
+    [0,17],[17,18],[18,19],[19,20],// pinky
+    [5,9],[9,13],[13,17]           // palm
+  ];
+
+  const accent = `rgba(232,255,71,${0.5 + pinchStrength * 0.5})`;
+  const pinchCol = pinchStrength > 0.5
+    ? `rgba(255,71,120,${pinchStrength})`
+    : accent;
+
+  hCtx.strokeStyle = accent;
+  hCtx.lineWidth   = 1.5;
+
+  for (const [a, b] of connections) {
+    const lA = landmarks[a], lB = landmarks[b];
+    hCtx.beginPath();
+    hCtx.moveTo((1 - lA.x) * W, lA.y * H);
+    hCtx.lineTo((1 - lB.x) * W, lB.y * H);
+    hCtx.stroke();
+  }
+
+  // Draw each landmark dot
+  for (let i = 0; i < landmarks.length; i++) {
+    const lm = landmarks[i];
+    const x = (1 - lm.x) * W, y = lm.y * H;
+    hCtx.beginPath();
+    hCtx.arc(x, y, i === 4 || i === 8 ? 5 : 2.5, 0, Math.PI * 2);
+    hCtx.fillStyle = (i === 4 || i === 8) ? pinchCol : accent;
+    hCtx.fill();
+  }
+
+  // Draw pinch indicator line between thumb & index
+  const t = landmarks[4], idx = landmarks[8];
+  hCtx.beginPath();
+  hCtx.moveTo((1 - t.x) * W, t.y * H);
+  hCtx.lineTo((1 - idx.x) * W, idx.y * H);
+  hCtx.strokeStyle = pinchCol;
+  hCtx.lineWidth = 2;
+  hCtx.setLineDash([4, 3]);
+  hCtx.stroke();
+  hCtx.setLineDash([]);
+
+  // Pinch strength label
+  if (pinchStrength > 0.05) {
+    const mx = ((1-t.x) + (1-idx.x)) / 2 * W;
+    const my = (t.y + idx.y) / 2 * H - 12;
+    hCtx.font = '600 11px "Space Mono", monospace';
+    hCtx.fillStyle = pinchCol;
+    hCtx.textAlign = 'center';
+    hCtx.fillText(`SQUISH ${Math.round(pinchStrength * 100)}%`, mx, my);
+  }
+}
+
+// Hint overlay shown only on squish filter
+function updateSquishHint() {
+  const isSquish = currentFilter === SQUISH_FILTER_IDX;
+  let hint = document.getElementById('squish-hint');
+  if (!hint) {
+    hint = document.createElement('div');
+    hint.id = 'squish-hint';
+    hint.style.cssText = `
+      position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+      font-family: 'Space Mono', monospace; font-size: 0.55rem;
+      letter-spacing: 0.1em; text-transform: uppercase;
+      color: rgba(232,255,71,0.7); background: rgba(10,10,12,0.75);
+      padding: 4px 10px; border-radius: 2px; pointer-events: none;
+      white-space: nowrap; z-index: 6;
+      transition: opacity 0.3s;
+    `;
+    hint.textContent = '🤏 Pinch over your head to squish';
+    document.querySelector('.stage').appendChild(hint);
+  }
+  hint.style.opacity = isSquish ? '1' : '0';
+}
+
+// Hook into selectFilter to show/hide hint and clear overlay
+const _origSelectFilter = selectFilter;
+selectFilter = function(idx) {
+  _origSelectFilter(idx);
+  updateSquishHint();
+  if (currentFilter !== SQUISH_FILTER_IDX) {
+    hCtx && hCtx.clearRect(0, 0, handOverlay.width, handOverlay.height);
+    squishAmount = 0; squishTarget = 0;
+  }
+};
+
+// Init MediaPipe once camera is running (called from startup block above)
 </script>
 </body>
 </html>

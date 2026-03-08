@@ -1,6 +1,6 @@
 # 📷 PHOTO BOOTH
 
-A real-time WebGL photo booth that runs entirely in the browser. No installs, no backend.
+A vibecoded real-time WebGL photo booth that runs entirely in the browser. No installs, no backend.
 
 **[Try the live demo →](https://ctborg.github.io/bmt/)**
 

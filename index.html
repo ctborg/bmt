@@ -16,64 +16,88 @@
     --accent2: #ff4778;
     --text: #f0f0f8;
     --muted: #6a6a88;
-    --flash: rgba(255,255,255,0);
+    --header-h: 48px;
+    --bottom-h: 148px;
   }
 
-  * { margin: 0; padding: 0; box-sizing: border-box; }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
-  body {
+  html, body {
+    width: 100%; height: 100%;
     background: var(--bg);
     color: var(--text);
     font-family: 'DM Sans', sans-serif;
-    height: 100vh;
     overflow: hidden;
+  }
+
+  /* ── FULL-HEIGHT COLUMN LAYOUT ── */
+  .app-shell {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: center;
+    width: 100%;
+    height: 100%;
+    height: 100dvh; /* dynamic viewport height — accounts for mobile browser chrome */
   }
 
   /* HEADER */
   .header {
-    position: fixed;
-    top: 0; left: 0; right: 0;
-    z-index: 100;
+    flex-shrink: 0;
+    height: var(--header-h);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 14px 24px;
-    background: linear-gradient(to bottom, rgba(10,10,12,0.95), transparent);
-    backdrop-filter: blur(4px);
+    padding: 0 16px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    z-index: 10;
   }
   .logo {
     font-family: 'Bebas Neue', cursive;
-    font-size: 1.6rem;
+    font-size: 1.4rem;
     letter-spacing: 0.12em;
     color: var(--accent);
-    text-shadow: 0 0 20px rgba(232,255,71,0.4);
+    text-shadow: 0 0 20px rgba(232,255,71,0.35);
   }
   .logo span { color: var(--muted); }
   .fps-counter {
     font-family: 'Space Mono', monospace;
-    font-size: 0.65rem;
+    font-size: 0.6rem;
     color: var(--muted);
     letter-spacing: 0.1em;
   }
   .fps-counter b { color: var(--accent); }
 
-  /* MAIN CANVAS AREA */
+  /* STAGE — takes all remaining vertical space */
+  .stage-wrap {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    overflow: hidden;
+    position: relative;
+  }
+
   .stage {
     position: relative;
-    width: min(100vw, calc(100vh * 4/3));
-    max-width: 900px;
-    aspect-ratio: 4/3;
+    /* Fill width on portrait, fill height on landscape */
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   canvas#glcanvas {
-    width: 100%;
-    height: 100%;
+    /* Letterbox/pillarbox to fill available space without overflow */
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    aspect-ratio: 4/3;
     display: block;
-    border-radius: 4px;
+    object-fit: contain;
   }
 
   #flash-overlay {
@@ -82,42 +106,74 @@
     background: white;
     opacity: 0;
     pointer-events: none;
-    border-radius: 4px;
     transition: opacity 0s;
   }
 
   #filter-name-overlay {
     position: absolute;
-    top: 14px; left: 14px;
+    top: 10px; left: 10px;
     font-family: 'Space Mono', monospace;
-    font-size: 0.65rem;
+    font-size: 0.6rem;
     letter-spacing: 0.15em;
     text-transform: uppercase;
     color: var(--accent);
-    background: rgba(10,10,12,0.7);
-    padding: 4px 10px;
+    background: rgba(10,10,12,0.75);
+    padding: 3px 8px;
     border-radius: 2px;
     border-left: 2px solid var(--accent);
+    pointer-events: none;
   }
 
-  /* BOTTOM UI */
+  /* BOTTOM PANEL */
   .bottom-ui {
-    position: fixed;
-    bottom: 0; left: 0; right: 0;
-    z-index: 100;
-    padding: 16px 24px 24px;
-    background: linear-gradient(to top, rgba(10,10,12,0.98) 70%, transparent);
-    backdrop-filter: blur(4px);
+    flex-shrink: 0;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    padding: 8px 12px env(safe-area-inset-bottom, 8px);
+    z-index: 10;
+  }
+
+  /* GALLERY — horizontal strip above carousel on mobile */
+  .gallery-strip {
+    display: flex;
+    flex-direction: row;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: 0 0 8px;
+    min-height: 0;
+  }
+  .gallery-strip:empty { display: none; }
+  .gallery-strip::-webkit-scrollbar { display: none; }
+
+  .gallery-thumb {
+    flex-shrink: 0;
+    width: 48px;
+    height: 36px;
+    object-fit: cover;
+    border-radius: 3px;
+    border: 1.5px solid var(--border);
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.15s;
+    animation: thumbIn 0.25s ease;
+  }
+  .gallery-thumb:hover, .gallery-thumb:active {
+    border-color: var(--accent2);
+    transform: scale(1.08);
+  }
+  @keyframes thumbIn {
+    from { opacity: 0; transform: scale(0.7); }
+    to   { opacity: 1; transform: scale(1); }
   }
 
   /* FILTER CAROUSEL */
   .carousel-track {
     display: flex;
-    gap: 10px;
+    gap: 8px;
     overflow-x: auto;
-    padding: 4px 0 10px;
+    padding: 2px 0 8px;
     scrollbar-width: none;
-    justify-content: center;
+    /* Don't center — let it scroll naturally on mobile */
   }
   .carousel-track::-webkit-scrollbar { display: none; }
 
@@ -126,131 +182,120 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     cursor: pointer;
-    transition: transform 0.18s ease;
+    transition: transform 0.15s ease;
+    -webkit-user-select: none; user-select: none;
   }
-  .filter-chip:hover { transform: translateY(-3px); }
-  .filter-chip:hover .chip-preview { border-color: var(--accent); }
+  .filter-chip:active { transform: scale(0.93); }
 
   .chip-preview {
-    width: 62px;
-    height: 46px;
-    border-radius: 6px;
+    width: 52px;
+    height: 38px;
+    border-radius: 5px;
     border: 2px solid var(--border);
     background: var(--surface2);
-    overflow: hidden;
-    transition: border-color 0.18s, box-shadow 0.18s;
-    position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
+    transition: border-color 0.15s, box-shadow 0.15s;
   }
-  .chip-preview canvas {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-  }
-
   .filter-chip.active .chip-preview {
     border-color: var(--accent);
-    box-shadow: 0 0 14px rgba(232,255,71,0.3);
+    box-shadow: 0 0 10px rgba(232,255,71,0.3);
   }
   .filter-chip.active .chip-label { color: var(--accent); }
-
   .chip-label {
     font-family: 'Space Mono', monospace;
-    font-size: 0.55rem;
-    letter-spacing: 0.1em;
+    font-size: 0.48rem;
+    letter-spacing: 0.08em;
     color: var(--muted);
     text-transform: uppercase;
     text-align: center;
-    transition: color 0.18s;
+    transition: color 0.15s;
+    max-width: 52px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-
-  /* CHIP ICONS (CSS only) */
-  .chip-icon {
-    font-size: 1.4rem;
-    line-height: 1;
-  }
+  .chip-icon { font-size: 1.2rem; line-height: 1; }
 
   /* CONTROLS ROW */
   .controls-row {
     display: flex;
     align-items: center;
-    justify-content: center;
-    gap: 16px;
-    margin-top: 4px;
+    justify-content: space-between;
+    gap: 10px;
+    padding-top: 4px;
   }
 
   .btn {
     font-family: 'Space Mono', monospace;
-    font-size: 0.65rem;
-    letter-spacing: 0.12em;
+    font-size: 0.6rem;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
     border: 1px solid var(--border);
     background: var(--surface2);
     color: var(--muted);
-    padding: 8px 18px;
+    padding: 9px 14px;
     border-radius: 4px;
     cursor: pointer;
     transition: all 0.15s;
+    flex: 1;
   }
-  .btn:hover { border-color: var(--accent); color: var(--text); }
+  .btn:active { border-color: var(--accent); color: var(--text); }
 
   .btn-capture {
-    width: 58px;
-    height: 58px;
+    width: 62px;
+    height: 62px;
     border-radius: 50%;
     border: 3px solid var(--accent);
     background: transparent;
     cursor: pointer;
-    position: relative;
-    transition: transform 0.12s, box-shadow 0.12s;
     flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
+    transition: transform 0.12s, box-shadow 0.12s;
+    position: relative;
   }
   .btn-capture::after {
     content: '';
-    width: 44px;
-    height: 44px;
+    width: 48px; height: 48px;
     border-radius: 50%;
     background: var(--accent);
-    transition: background 0.12s, transform 0.12s;
+    transition: transform 0.1s;
   }
-  .btn-capture:hover { box-shadow: 0 0 24px rgba(232,255,71,0.35); transform: scale(1.05); }
-  .btn-capture:active::after { transform: scale(0.88); background: #c8df20; }
+  .btn-capture:active { transform: scale(0.93); box-shadow: 0 0 20px rgba(232,255,71,0.4); }
+  .btn-capture:active::after { transform: scale(0.87); }
 
-  /* GALLERY */
-  .gallery-strip {
-    position: fixed;
-    right: 16px;
-    top: 50%;
-    transform: translateY(-50%);
-    z-index: 100;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    max-height: 70vh;
-    overflow-y: auto;
-    scrollbar-width: none;
-    padding: 4px;
-  }
-  .gallery-strip::-webkit-scrollbar { display: none; }
-  .gallery-thumb {
-    width: 70px;
-    height: 52px;
-    object-fit: cover;
-    border-radius: 4px;
-    border: 2px solid var(--border);
-    cursor: pointer;
-    transition: border-color 0.15s, transform 0.15s;
-    animation: thumbIn 0.3s ease;
-  }
-  .gallery-thumb:hover { border-color: var(--accent2); transform: scale(1.06) translateX(-3px); }
-  @keyframes thumbIn {
-    from { opacity: 0; transform: translateX(20px) scale(0.85); }
-    to { opacity: 1; transform: none; }
+  /* ── LANDSCAPE: restore side gallery, wider canvas ── */
+  @media (orientation: landscape) {
+    :root { --header-h: 42px; --bottom-h: 120px; }
+
+    .gallery-strip {
+      /* Move gallery to fixed right side in landscape */
+      position: fixed;
+      right: 10px;
+      top: var(--header-h);
+      bottom: var(--bottom-h);
+      flex-direction: column;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 8px 0;
+      width: 58px;
+      gap: 6px;
+      background: transparent;
+      z-index: 10;
+    }
+    .gallery-thumb {
+      width: 54px;
+      height: 40px;
+    }
+    /* Shrink bottom panel in landscape */
+    .bottom-ui { padding: 6px 10px env(safe-area-inset-bottom, 6px); }
+    .chip-preview { width: 46px; height: 34px; }
+    .chip-label { font-size: 0.44rem; max-width: 46px; }
+    .btn-capture { width: 54px; height: 54px; }
+    .btn-capture::after { width: 42px; height: 42px; }
   }
 
   /* PERMISSION SCREEN */
@@ -259,95 +304,90 @@
     background: var(--bg);
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
-    gap: 20px;
+    gap: 18px;
     text-align: center;
     padding: 24px;
   }
   #permission-screen h1 {
     font-family: 'Bebas Neue', cursive;
-    font-size: 3.5rem;
+    font-size: clamp(2.2rem, 8vw, 3.5rem);
     letter-spacing: 0.1em;
     color: var(--accent);
   }
   #permission-screen p {
     color: var(--muted);
-    font-size: 0.9rem;
-    max-width: 320px;
+    font-size: 0.88rem;
+    max-width: 300px;
     line-height: 1.6;
   }
   #permission-screen .btn-start {
     font-family: 'Bebas Neue', cursive;
-    font-size: 1.4rem;
+    font-size: 1.3rem;
     letter-spacing: 0.15em;
     background: var(--accent);
     color: var(--bg);
     border: none;
-    padding: 14px 48px;
+    padding: 13px 44px;
     border-radius: 4px;
     cursor: pointer;
-    transition: transform 0.15s, box-shadow 0.15s;
+    transition: transform 0.15s;
   }
-  #permission-screen .btn-start:hover {
-    transform: scale(1.04);
-    box-shadow: 0 0 30px rgba(232,255,71,0.4);
-  }
-  .cam-icon { font-size: 3rem; }
+  #permission-screen .btn-start:active { transform: scale(0.96); }
+  .cam-icon { font-size: 2.5rem; }
 
-  /* MODAL LIGHTBOX */
+  /* LIGHTBOX */
   #lightbox {
     display: none;
     position: fixed; inset: 0; z-index: 300;
-    background: rgba(0,0,0,0.85);
+    background: rgba(0,0,0,0.88);
     align-items: center; justify-content: center;
+    flex-direction: column;
+    gap: 16px;
+    padding: 24px;
     backdrop-filter: blur(8px);
   }
   #lightbox.open { display: flex; }
   #lightbox img {
-    max-width: 90vw;
-    max-height: 85vh;
+    max-width: 100%;
+    max-height: 70dvh;
     border-radius: 6px;
     border: 2px solid var(--border);
+    object-fit: contain;
+  }
+  .lightbox-actions {
+    display: flex; gap: 10px;
+  }
+  #lightbox-close, #lightbox-dl {
+    font-family: 'Space Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+    padding: 9px 20px;
+    border-radius: 4px;
+    cursor: pointer;
   }
   #lightbox-close {
-    position: absolute; top: 20px; right: 20px;
-    font-family: 'Space Mono', monospace;
-    font-size: 0.7rem;
-    letter-spacing: 0.1em;
     color: var(--muted);
-    cursor: pointer;
     border: 1px solid var(--border);
     background: var(--surface);
-    padding: 6px 14px;
-    border-radius: 4px;
   }
   #lightbox-dl {
-    position: absolute; bottom: 20px;
-    font-family: 'Space Mono', monospace;
-    font-size: 0.7rem;
-    letter-spacing: 0.1em;
     color: var(--bg);
     background: var(--accent);
     border: none;
-    padding: 8px 20px;
-    border-radius: 4px;
-    cursor: pointer;
   }
 
   /* NO CAM MSG */
   #nocam-msg {
     display: none;
-    position: absolute;
-    inset: 0;
+    position: absolute; inset: 0;
     background: var(--surface);
-    align-items: center;
-    justify-content: center;
+    align-items: center; justify-content: center;
     flex-direction: column;
     gap: 10px;
     font-family: 'Space Mono', monospace;
     font-size: 0.7rem;
     color: var(--muted);
     text-align: center;
-    border-radius: 4px;
   }
 </style>
 </head>
@@ -361,38 +401,45 @@
   <button class="btn-start" id="btn-start">Enable Camera</button>
 </div>
 
-<!-- HEADER -->
-<header class="header">
-  <div class="logo">GLSL <span>BOOTH</span></div>
-  <div class="fps-counter">FPS: <b id="fps-val">—</b></div>
-</header>
+<div class="app-shell">
+  <!-- HEADER -->
+  <header class="header">
+    <div class="logo">GLSL <span>BOOTH</span></div>
+    <div class="fps-counter">FPS: <b id="fps-val">—</b></div>
+  </header>
 
-<!-- MAIN STAGE -->
-<div class="stage">
-  <canvas id="glcanvas"></canvas>
-  <div id="flash-overlay"></div>
-  <div id="filter-name-overlay" id="filter-label">PASSTHROUGH</div>
-  <div id="nocam-msg">⚠ NO CAMERA<br>CHECK PERMISSIONS</div>
-</div>
+  <!-- STAGE -->
+  <div class="stage-wrap">
+    <div class="stage">
+      <canvas id="glcanvas"></canvas>
+      <div id="flash-overlay"></div>
+      <div id="filter-name-overlay">PASSTHROUGH</div>
+      <div id="nocam-msg">⚠ NO CAMERA<br>CHECK PERMISSIONS</div>
+    </div>
+  </div>
 
-<!-- GALLERY STRIP -->
-<div class="gallery-strip" id="gallery-strip"></div>
-
-<!-- BOTTOM UI -->
-<div class="bottom-ui">
-  <div class="carousel-track" id="carousel"></div>
-  <div class="controls-row">
-    <button class="btn" id="btn-prev">◀ PREV</button>
-    <button class="btn-capture" id="btn-capture" title="Capture"></button>
-    <button class="btn" id="btn-next">NEXT ▶</button>
+  <!-- BOTTOM PANEL -->
+  <div class="bottom-ui">
+    <!-- Gallery: horizontal on portrait, repositioned by CSS in landscape -->
+    <div class="gallery-strip" id="gallery-strip"></div>
+    <!-- Filter carousel -->
+    <div class="carousel-track" id="carousel"></div>
+    <!-- Shutter row -->
+    <div class="controls-row">
+      <button class="btn" id="btn-prev">◀ PREV</button>
+      <button class="btn-capture" id="btn-capture" title="Capture"></button>
+      <button class="btn" id="btn-next">NEXT ▶</button>
+    </div>
   </div>
 </div>
 
 <!-- LIGHTBOX -->
 <div id="lightbox">
-  <button id="lightbox-close">✕ CLOSE</button>
   <img id="lightbox-img" src="" alt="capture">
-  <button id="lightbox-dl">⬇ DOWNLOAD</button>
+  <div class="lightbox-actions">
+    <button id="lightbox-close">✕ CLOSE</button>
+    <button id="lightbox-dl">⬇ DOWNLOAD</button>
+  </div>
 </div>
 
 <script>
@@ -1117,12 +1164,13 @@ function render(ts) {
     document.getElementById('fps-val').textContent = fps;
   }
 
-  // Resize canvas to display
+  // Resize canvas to its actual rendered pixel size
+  const stageWrap = canvas.parentElement.parentElement; // stage-wrap
   const W = canvas.clientWidth;
   const H = canvas.clientHeight;
   if (canvas.width !== W || canvas.height !== H) {
-    canvas.width = W;
-    canvas.height = H;
+    canvas.width  = W || 640;
+    canvas.height = H || 480;
   }
 
   // Mouse speed (decays each frame)
@@ -1285,6 +1333,21 @@ canvas.addEventListener('mousemove', e => {
   lastMouseX = mouseX; lastMouseY = mouseY;
   mouseX = nx; mouseY = ny;
 });
+
+// Touch tracking — same as mouse for snow gesture
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const t = e.touches[0];
+  const nx = (t.clientX - rect.left) / rect.width;
+  const ny = 1.0 - (t.clientY - rect.top) / rect.height;
+  const dx = nx - mouseX;
+  const dy = ny - mouseY;
+  mouseSpeed = Math.min(1.0, Math.sqrt(dx*dx + dy*dy) * 30.0 + mouseSpeed * 0.5);
+  mouseX = nx; mouseY = ny;
+}, { passive: false });
+
+canvas.addEventListener('touchend', () => { mouseSpeed = 0; });
 
 // Buttons
 document.getElementById('btn-capture').addEventListener('click', capture);

@@ -938,6 +938,27 @@ void main(){
 }`
   },
   {
+    name: "Deep Thinker",
+    emoji: "💭",
+    frag: `
+precision mediump float;
+uniform sampler2D u_tex;
+uniform float u_time;
+varying vec2 v_uv;
+
+void main(){
+  vec2 uv = v_uv;
+  uv.x = 1.0 - uv.x;
+  vec3 col = texture2D(u_tex, uv).rgb;
+
+  // Soft warm desaturate when thinking
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  col = mix(col, vec3(lum) * vec3(1.02, 1.0, 0.95), 0.18);
+
+  gl_FragColor = vec4(col, 1.0);
+}`
+  },
+  {
     name: "Head Squish",
     emoji: "🤏",
     frag: `
@@ -1496,8 +1517,9 @@ function initMediaPipe() {
     function sendFrame(ts) {
       requestAnimationFrame(sendFrame);
       if (!video || video.readyState < 2) return;
-      if (currentFilter !== SQUISH_FILTER_IDX) {
-        // When not on squish filter, decay smoothly to zero and skip MP
+      const needsMP = currentFilter === SQUISH_FILTER_IDX || currentFilter === THINK_FILTER_IDX;
+      if (!needsMP) {
+        // When not on squish/think filter, decay smoothly to zero and skip MP
         squishTarget = 0;
         squishAmount += (squishTarget - squishAmount) * 0.12;
         return;
@@ -1664,13 +1686,279 @@ const _origSelectFilter = selectFilter;
 selectFilter = function(idx) {
   _origSelectFilter(idx);
   updateSquishHint();
-  if (currentFilter !== SQUISH_FILTER_IDX) {
+  if (currentFilter !== SQUISH_FILTER_IDX && currentFilter !== THINK_FILTER_IDX) {
     hCtx && hCtx.clearRect(0, 0, handOverlay.width, handOverlay.height);
+    squishAmount = 0; squishTarget = 0;
+  }
+  if (currentFilter !== SQUISH_FILTER_IDX) {
     squishAmount = 0; squishTarget = 0;
   }
 };
 
 // Init MediaPipe once camera is running (called from startup block above)
+
+// ─────────────────────────────────────────────
+//  DEEP THINKER — Thought Bubbles
+// ─────────────────────────────────────────────
+const THINK_FILTER_IDX = FILTERS.findIndex(f => f.name === 'Deep Thinker');
+
+// Scratch detection state
+let scratchHandSpeed   = 0;   // smoothed wrist velocity
+let scratchConfidence  = 0;   // 0..1, grows when hand near head + moving
+let scratchTriggerTime = -999;// last time scratch was fully triggered
+
+// Thought bubble particles
+// Each: { x, y, r, alpha, vy, vx, born, kind: 'dot'|'cloud' }
+let thoughtBubbles = [];
+
+// Wrist position (mirrored) from MediaPipe
+let thinkWristX = 0.5, thinkWristY = 0.5;
+let thinkWristPrevX = 0.5, thinkWristPrevY = 0.5;
+let thinkHeadTopY = 0.3; // estimated head top (UV, 0=bottom)
+
+// How many thought topic emoji to cycle through
+const THOUGHT_TOPICS = ['?', '!', '💡', '🧩', '∞', '?!'];
+let thoughtTopicIdx = 0;
+
+function spawnThoughtBubbles(wristX, headTopY, now) {
+  // Spawn a trail of small dots + a final cloud
+  const baseX = wristX;
+  // UV: headTopY is in UV space (0=bottom), so in canvas space y = (1-headTopY)*H
+  // We'll store everything in UV-like [0..1] coords, render on overlay canvas
+
+  const count = 4 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < count; i++) {
+    const frac = i / (count - 1); // 0=near head, 1=far above
+    const r = 6 + frac * 14;
+    thoughtBubbles.push({
+      kind: 'dot',
+      x: baseX + (Math.random() - 0.5) * 0.06,
+      y: headTopY + 0.03 + frac * 0.18 + (Math.random() - 0.5) * 0.02,
+      r,
+      alpha: 1.0,
+      vy: -(0.0003 + Math.random() * 0.0002), // drift upward (UV/frame)
+      vx: (Math.random() - 0.5) * 0.0001,
+      born: now,
+      life: 1800 + Math.random() * 800,
+    });
+  }
+
+  // Big cloud bubble at top
+  const topic = THOUGHT_TOPICS[thoughtTopicIdx % THOUGHT_TOPICS.length];
+  thoughtTopicIdx++;
+  thoughtBubbles.push({
+    kind: 'cloud',
+    x: baseX + (Math.random() - 0.5) * 0.08,
+    y: headTopY + 0.22 + Math.random() * 0.06,
+    r: 34,
+    alpha: 1.0,
+    vy: -(0.00012 + Math.random() * 0.00008),
+    vx: (Math.random() - 0.5) * 0.00006,
+    born: now,
+    life: 2800 + Math.random() * 600,
+    text: topic,
+  });
+}
+
+function drawThoughtBubbles(now) {
+  if (currentFilter !== THINK_FILTER_IDX) {
+    thoughtBubbles = [];
+    return;
+  }
+
+  const W = handOverlay.width  || canvas.clientWidth;
+  const H = handOverlay.height || canvas.clientHeight;
+
+  // Update & draw
+  thoughtBubbles = thoughtBubbles.filter(b => {
+    const age = now - b.born;
+    if (age > b.life) return false;
+
+    b.x += b.vx;
+    b.y += b.vy;
+    b.alpha = Math.max(0, 1.0 - (age / b.life) * 1.2);
+
+    // Convert UV→canvas (y is flipped: UV y=0 is bottom)
+    const cx = b.x * W;
+    const cy = (1 - b.y) * H;
+
+    hCtx.globalAlpha = b.alpha;
+
+    if (b.kind === 'dot') {
+      // Soft white circle with dreamy glow
+      const grad = hCtx.createRadialGradient(cx, cy, 0, cx, cy, b.r);
+      grad.addColorStop(0,   'rgba(255,255,255,0.95)');
+      grad.addColorStop(0.6, 'rgba(230,235,255,0.7)');
+      grad.addColorStop(1,   'rgba(200,210,255,0.0)');
+      hCtx.beginPath();
+      hCtx.arc(cx, cy, b.r, 0, Math.PI * 2);
+      hCtx.fillStyle = grad;
+      hCtx.fill();
+
+      // Thin outline
+      hCtx.strokeStyle = 'rgba(180,190,255,0.5)';
+      hCtx.lineWidth   = 1;
+      hCtx.stroke();
+
+    } else if (b.kind === 'cloud') {
+      drawCloudBubble(cx, cy, b.r, b.text, b.alpha);
+    }
+
+    hCtx.globalAlpha = 1.0;
+    return true;
+  });
+}
+
+function drawCloudBubble(cx, cy, r, text, alpha) {
+  hCtx.save();
+  hCtx.globalAlpha = alpha;
+
+  // Cloud shape: overlapping circles
+  const lobes = [
+    [cx - r*0.55, cy + r*0.25, r*0.52],
+    [cx - r*0.15, cy - r*0.05, r*0.60],
+    [cx + r*0.3,  cy + r*0.1,  r*0.58],
+    [cx + r*0.65, cy + r*0.35, r*0.45],
+    [cx,          cy + r*0.45, r*0.45],
+  ];
+
+  // White fill
+  hCtx.fillStyle = 'rgba(255,255,255,0.93)';
+  for (const [lx, ly, lr] of lobes) {
+    hCtx.beginPath();
+    hCtx.arc(lx, ly, lr, 0, Math.PI * 2);
+    hCtx.fill();
+  }
+
+  // Soft stroke
+  hCtx.strokeStyle = 'rgba(160,170,220,0.7)';
+  hCtx.lineWidth   = 1.5;
+  for (const [lx, ly, lr] of lobes) {
+    hCtx.beginPath();
+    hCtx.arc(lx, ly, lr, 0, Math.PI * 2);
+    hCtx.stroke();
+  }
+
+  // Text inside
+  hCtx.globalAlpha = alpha * 0.9;
+  hCtx.font        = `bold ${Math.round(r * 0.85)}px "DM Sans", sans-serif`;
+  hCtx.fillStyle   = '#3344aa';
+  hCtx.textAlign   = 'center';
+  hCtx.textBaseline= 'middle';
+  hCtx.fillText(text, cx + r*0.1, cy + r*0.2);
+
+  hCtx.restore();
+}
+
+// Hook into onHandResults to also feed the Deep Thinker logic
+const _origOnHandResults = onHandResults;
+onHandResults = function(results) {
+  _origOnHandResults(results);
+
+  if (currentFilter !== THINK_FILTER_IDX) {
+    scratchConfidence = 0;
+    return;
+  }
+
+  // Sync overlay size
+  handOverlay.width  = canvas.clientWidth;
+  handOverlay.height = canvas.clientHeight;
+
+  const now = performance.now();
+
+  if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+    scratchConfidence *= 0.85;
+    drawThoughtBubbles(now);
+    return;
+  }
+
+  for (const landmarks of results.multiHandLandmarks) {
+    const wrist     = landmarks[0];
+    const indexTip  = landmarks[8];
+    const middleTip = landmarks[12];
+
+    const wx = 1 - wrist.x;
+    const wy = wrist.y; // 0=top in MediaPipe
+
+    // Track wrist velocity
+    const dWx = wx - thinkWristPrevX;
+    const dWy = wy - thinkWristPrevY;
+    const wristVel = Math.sqrt(dWx*dWx + dWy*dWy);
+    thinkWristPrevX = thinkWristX;
+    thinkWristPrevY = thinkWristY;
+    thinkWristX = wx;
+    thinkWristY = wy;
+
+    scratchHandSpeed += (wristVel * 60 - scratchHandSpeed) * 0.25; // smooth at ~20fps
+
+    // Scratching = wrist is in upper 50% of frame AND moving laterally
+    const isNearHead = wy < 0.55;
+    const isMoving   = scratchHandSpeed > 0.08;
+
+    if (isNearHead && isMoving) {
+      scratchConfidence = Math.min(1, scratchConfidence + 0.12);
+    } else {
+      scratchConfidence *= 0.88;
+    }
+
+    // Update estimated head top: just above wrist Y (in UV: 0=bottom, 1=top)
+    // wy is in MediaPipe space (0=top screen). Estimate head top = slightly above wrist
+    thinkHeadTopY = 1.0 - (wy - 0.1); // convert to UV space (invert), go a bit higher
+    thinkHeadTopY = Math.max(0.45, Math.min(0.92, thinkHeadTopY));
+
+    // Trigger bubble spawn when confidence threshold reached, throttled
+    if (scratchConfidence > 0.6 && (now - scratchTriggerTime) > 1200) {
+      scratchTriggerTime = now;
+      spawnThoughtBubbles(wx, thinkHeadTopY, now);
+    }
+  }
+  // Note: drawing is handled by the render loop override below
+};
+
+// Draw thought bubbles every frame when on Think filter
+const _origRender = render;
+render = function(ts) {
+  _origRender(ts);
+  if (currentFilter === THINK_FILTER_IDX) {
+    handOverlay.width  = canvas.clientWidth;
+    handOverlay.height = canvas.clientHeight;
+    hCtx.clearRect(0, 0, handOverlay.width, handOverlay.height);
+    drawThoughtBubbles(ts);
+  }
+};
+
+// Hint overlay for Deep Thinker
+function updateThinkHint() {
+  const isThink = currentFilter === THINK_FILTER_IDX;
+  let hint = document.getElementById('think-hint');
+  if (!hint) {
+    hint = document.createElement('div');
+    hint.id = 'think-hint';
+    hint.style.cssText = `
+      position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+      font-family: 'Space Mono', monospace; font-size: 0.55rem;
+      letter-spacing: 0.1em; text-transform: uppercase;
+      color: rgba(180,190,255,0.85); background: rgba(10,10,12,0.75);
+      padding: 4px 10px; border-radius: 2px; pointer-events: none;
+      white-space: nowrap; z-index: 6;
+      transition: opacity 0.3s;
+    `;
+    hint.textContent = '🤔 Scratch your head to think';
+    document.querySelector('.stage').appendChild(hint);
+  }
+  hint.style.opacity = isThink ? '1' : '0';
+}
+
+// Re-wrap selectFilter to also manage think hint
+const _origSelectFilter2 = selectFilter;
+selectFilter = function(idx) {
+  _origSelectFilter2(idx);
+  updateThinkHint();
+  if (currentFilter !== THINK_FILTER_IDX) {
+    thoughtBubbles = [];
+    scratchConfidence = 0;
+  }
+};
 </script>
 </body>
 </html>

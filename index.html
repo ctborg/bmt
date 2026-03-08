@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>GLSL BOOTH — WebGL Photo Studio</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap');
@@ -183,6 +183,7 @@
     cursor: pointer;
     transition: transform 0.15s ease;
     -webkit-user-select: none; user-select: none;
+    touch-action: manipulation;
   }
   .filter-chip:active { transform: scale(0.93); }
 
@@ -240,6 +241,7 @@
     cursor: pointer;
     transition: all 0.15s;
     text-align: center;
+    touch-action: manipulation;
   }
   .btn:hover { border-color: var(--accent); color: var(--text); }
   .btn:active { border-color: var(--accent); color: var(--text); }
@@ -255,6 +257,7 @@
     display: flex; align-items: center; justify-content: center;
     transition: transform 0.12s, box-shadow 0.12s;
     position: relative;
+    touch-action: manipulation;
   }
   .btn-capture::after {
     content: '';

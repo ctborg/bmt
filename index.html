@@ -1,0 +1,1038 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GLSL BOOTH — WebGL Photo Studio</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap');
+
+  :root {
+    --bg: #0a0a0c;
+    --surface: #111116;
+    --surface2: #1a1a22;
+    --border: #2a2a38;
+    --accent: #e8ff47;
+    --accent2: #ff4778;
+    --text: #f0f0f8;
+    --muted: #6a6a88;
+    --flash: rgba(255,255,255,0);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* HEADER */
+  .header {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 24px;
+    background: linear-gradient(to bottom, rgba(10,10,12,0.95), transparent);
+    backdrop-filter: blur(4px);
+  }
+  .logo {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 1.6rem;
+    letter-spacing: 0.12em;
+    color: var(--accent);
+    text-shadow: 0 0 20px rgba(232,255,71,0.4);
+  }
+  .logo span { color: var(--muted); }
+  .fps-counter {
+    font-family: 'Space Mono', monospace;
+    font-size: 0.65rem;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+  }
+  .fps-counter b { color: var(--accent); }
+
+  /* MAIN CANVAS AREA */
+  .stage {
+    position: relative;
+    width: min(100vw, calc(100vh * 4/3));
+    max-width: 900px;
+    aspect-ratio: 4/3;
+  }
+
+  canvas#glcanvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    border-radius: 4px;
+  }
+
+  #flash-overlay {
+    position: absolute;
+    inset: 0;
+    background: white;
+    opacity: 0;
+    pointer-events: none;
+    border-radius: 4px;
+    transition: opacity 0s;
+  }
+
+  #filter-name-overlay {
+    position: absolute;
+    top: 14px; left: 14px;
+    font-family: 'Space Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: rgba(10,10,12,0.7);
+    padding: 4px 10px;
+    border-radius: 2px;
+    border-left: 2px solid var(--accent);
+  }
+
+  /* BOTTOM UI */
+  .bottom-ui {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    z-index: 100;
+    padding: 16px 24px 24px;
+    background: linear-gradient(to top, rgba(10,10,12,0.98) 70%, transparent);
+    backdrop-filter: blur(4px);
+  }
+
+  /* FILTER CAROUSEL */
+  .carousel-track {
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    padding: 4px 0 10px;
+    scrollbar-width: none;
+    justify-content: center;
+  }
+  .carousel-track::-webkit-scrollbar { display: none; }
+
+  .filter-chip {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    transition: transform 0.18s ease;
+  }
+  .filter-chip:hover { transform: translateY(-3px); }
+  .filter-chip:hover .chip-preview { border-color: var(--accent); }
+
+  .chip-preview {
+    width: 62px;
+    height: 46px;
+    border-radius: 6px;
+    border: 2px solid var(--border);
+    background: var(--surface2);
+    overflow: hidden;
+    transition: border-color 0.18s, box-shadow 0.18s;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .chip-preview canvas {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .filter-chip.active .chip-preview {
+    border-color: var(--accent);
+    box-shadow: 0 0 14px rgba(232,255,71,0.3);
+  }
+  .filter-chip.active .chip-label { color: var(--accent); }
+
+  .chip-label {
+    font-family: 'Space Mono', monospace;
+    font-size: 0.55rem;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    text-transform: uppercase;
+    text-align: center;
+    transition: color 0.18s;
+  }
+
+  /* CHIP ICONS (CSS only) */
+  .chip-icon {
+    font-size: 1.4rem;
+    line-height: 1;
+  }
+
+  /* CONTROLS ROW */
+  .controls-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    margin-top: 4px;
+  }
+
+  .btn {
+    font-family: 'Space Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--muted);
+    padding: 8px 18px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--text); }
+
+  .btn-capture {
+    width: 58px;
+    height: 58px;
+    border-radius: 50%;
+    border: 3px solid var(--accent);
+    background: transparent;
+    cursor: pointer;
+    position: relative;
+    transition: transform 0.12s, box-shadow 0.12s;
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .btn-capture::after {
+    content: '';
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: var(--accent);
+    transition: background 0.12s, transform 0.12s;
+  }
+  .btn-capture:hover { box-shadow: 0 0 24px rgba(232,255,71,0.35); transform: scale(1.05); }
+  .btn-capture:active::after { transform: scale(0.88); background: #c8df20; }
+
+  /* GALLERY */
+  .gallery-strip {
+    position: fixed;
+    right: 16px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 70vh;
+    overflow-y: auto;
+    scrollbar-width: none;
+    padding: 4px;
+  }
+  .gallery-strip::-webkit-scrollbar { display: none; }
+  .gallery-thumb {
+    width: 70px;
+    height: 52px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 2px solid var(--border);
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.15s;
+    animation: thumbIn 0.3s ease;
+  }
+  .gallery-thumb:hover { border-color: var(--accent2); transform: scale(1.06) translateX(-3px); }
+  @keyframes thumbIn {
+    from { opacity: 0; transform: translateX(20px) scale(0.85); }
+    to { opacity: 1; transform: none; }
+  }
+
+  /* PERMISSION SCREEN */
+  #permission-screen {
+    position: fixed; inset: 0; z-index: 200;
+    background: var(--bg);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 20px;
+    text-align: center;
+    padding: 24px;
+  }
+  #permission-screen h1 {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 3.5rem;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+  }
+  #permission-screen p {
+    color: var(--muted);
+    font-size: 0.9rem;
+    max-width: 320px;
+    line-height: 1.6;
+  }
+  #permission-screen .btn-start {
+    font-family: 'Bebas Neue', cursive;
+    font-size: 1.4rem;
+    letter-spacing: 0.15em;
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    padding: 14px 48px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  #permission-screen .btn-start:hover {
+    transform: scale(1.04);
+    box-shadow: 0 0 30px rgba(232,255,71,0.4);
+  }
+  .cam-icon { font-size: 3rem; }
+
+  /* MODAL LIGHTBOX */
+  #lightbox {
+    display: none;
+    position: fixed; inset: 0; z-index: 300;
+    background: rgba(0,0,0,0.85);
+    align-items: center; justify-content: center;
+    backdrop-filter: blur(8px);
+  }
+  #lightbox.open { display: flex; }
+  #lightbox img {
+    max-width: 90vw;
+    max-height: 85vh;
+    border-radius: 6px;
+    border: 2px solid var(--border);
+  }
+  #lightbox-close {
+    position: absolute; top: 20px; right: 20px;
+    font-family: 'Space Mono', monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    padding: 6px 14px;
+    border-radius: 4px;
+  }
+  #lightbox-dl {
+    position: absolute; bottom: 20px;
+    font-family: 'Space Mono', monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    color: var(--bg);
+    background: var(--accent);
+    border: none;
+    padding: 8px 20px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  /* NO CAM MSG */
+  #nocam-msg {
+    display: none;
+    position: absolute;
+    inset: 0;
+    background: var(--surface);
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 10px;
+    font-family: 'Space Mono', monospace;
+    font-size: 0.7rem;
+    color: var(--muted);
+    text-align: center;
+    border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+
+<!-- PERMISSION SCREEN -->
+<div id="permission-screen">
+  <div class="cam-icon">📷</div>
+  <h1>GLSL BOOTH</h1>
+  <p>Real-time WebGL photo booth with GPU-accelerated shader filters. Grant camera access to begin.</p>
+  <button class="btn-start" id="btn-start">Enable Camera</button>
+</div>
+
+<!-- HEADER -->
+<header class="header">
+  <div class="logo">GLSL <span>BOOTH</span></div>
+  <div class="fps-counter">FPS: <b id="fps-val">—</b></div>
+</header>
+
+<!-- MAIN STAGE -->
+<div class="stage">
+  <canvas id="glcanvas"></canvas>
+  <div id="flash-overlay"></div>
+  <div id="filter-name-overlay" id="filter-label">PASSTHROUGH</div>
+  <div id="nocam-msg">⚠ NO CAMERA<br>CHECK PERMISSIONS</div>
+</div>
+
+<!-- GALLERY STRIP -->
+<div class="gallery-strip" id="gallery-strip"></div>
+
+<!-- BOTTOM UI -->
+<div class="bottom-ui">
+  <div class="carousel-track" id="carousel"></div>
+  <div class="controls-row">
+    <button class="btn" id="btn-prev">◀ PREV</button>
+    <button class="btn-capture" id="btn-capture" title="Capture"></button>
+    <button class="btn" id="btn-next">NEXT ▶</button>
+  </div>
+</div>
+
+<!-- LIGHTBOX -->
+<div id="lightbox">
+  <button id="lightbox-close">✕ CLOSE</button>
+  <img id="lightbox-img" src="" alt="capture">
+  <button id="lightbox-dl">⬇ DOWNLOAD</button>
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+//  SHADERS
+// ─────────────────────────────────────────────
+
+const VERT_SRC = `
+attribute vec2 a_position;
+varying vec2 v_uv;
+void main(){
+  v_uv = a_position * 0.5 + 0.5;
+  gl_Position = vec4(a_position, 0.0, 1.0);
+}`;
+
+const FILTERS = [
+  {
+    name: "Passthrough",
+    emoji: "🎥",
+    frag: `
+precision mediump float;
+uniform sampler2D u_tex;
+varying vec2 v_uv;
+void main(){
+  vec2 uv = v_uv;
+  uv.x = 1.0 - uv.x;
+  gl_FragColor = texture2D(u_tex, uv);
+}`
+  },
+  {
+    name: "Comic Book",
+    emoji: "💥",
+    frag: `
+precision mediump float;
+uniform sampler2D u_tex;
+uniform vec2 u_resolution;
+varying vec2 v_uv;
+
+vec3 quantize(vec3 c, float steps){
+  return floor(c * steps + 0.5) / steps;
+}
+
+void main(){
+  vec2 uv = v_uv;
+  uv.x = 1.0 - uv.x;
+  vec2 px = 1.0 / u_resolution;
+
+  // Sobel edge detection
+  vec3 tl = texture2D(u_tex, uv + vec2(-px.x,  px.y)).rgb;
+  vec3 tc = texture2D(u_tex, uv + vec2(  0.0,  px.y)).rgb;
+  vec3 tr = texture2D(u_tex, uv + vec2( px.x,  px.y)).rgb;
+  vec3 ml = texture2D(u_tex, uv + vec2(-px.x,   0.0)).rgb;
+  vec3 mr = texture2D(u_tex, uv + vec2( px.x,   0.0)).rgb;
+  vec3 bl = texture2D(u_tex, uv + vec2(-px.x, -px.y)).rgb;
+  vec3 bc = texture2D(u_tex, uv + vec2(  0.0, -px.y)).rgb;
+  vec3 br = texture2D(u_tex, uv + vec2( px.x, -px.y)).rgb;
+
+  float lTL = dot(tl, vec3(0.299,0.587,0.114));
+  float lTC = dot(tc, vec3(0.299,0.587,0.114));
+  float lTR = dot(tr, vec3(0.299,0.587,0.114));
+  float lML = dot(ml, vec3(0.299,0.587,0.114));
+  float lMR = dot(mr, vec3(0.299,0.587,0.114));
+  float lBL = dot(bl, vec3(0.299,0.587,0.114));
+  float lBC = dot(bc, vec3(0.299,0.587,0.114));
+  float lBR = dot(br, vec3(0.299,0.587,0.114));
+
+  float gx = -lTL - 2.0*lML - lBL + lTR + 2.0*lMR + lBR;
+  float gy = -lTL - 2.0*lTC - lTR + lBL + 2.0*lBC + lBR;
+  float edge = sqrt(gx*gx + gy*gy);
+  float ink = step(0.18, edge);
+
+  vec3 col = texture2D(u_tex, uv).rgb;
+  col = quantize(col, 4.0);
+  // Saturate
+  float lum = dot(col, vec3(0.299,0.587,0.114));
+  col = mix(vec3(lum), col, 2.2);
+  col = clamp(col, 0.0, 1.0);
+  col = mix(col, vec3(0.0), ink);
+  gl_FragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    name: "Snowfall",
+    emoji: "❄️",
+    frag: `
+precision mediump float;
+uniform sampler2D u_tex;
+uniform float u_time;
+uniform vec2 u_resolution;
+varying vec2 v_uv;
+
+float rand(vec2 n){ return fract(sin(dot(n, vec2(12.9898,78.233)))*43758.5453); }
+
+void main(){
+  vec2 uv = v_uv;
+  uv.x = 1.0 - uv.x;
+  vec3 video = texture2D(u_tex, uv).rgb;
+
+  // Aspect-correct UV
+  vec2 aspect = vec2(u_resolution.x/u_resolution.y, 1.0);
+  vec2 suv = v_uv * aspect;
+
+  float snow = 0.0;
+  float layers = 5.0;
+  for(float i = 0.0; i < 5.0; i++){
+    float speed = 0.08 + i * 0.05;
+    float gridSize = 12.0 + i * 8.0;
+    float drift = sin(u_time * 0.3 + i * 2.1) * 0.08;
+
+    vec2 cell = floor((suv * gridSize) + vec2(drift, u_time * speed * gridSize));
+    vec2 frac = fract(suv * gridSize + vec2(drift, u_time * speed * gridSize));
+
+    float r = rand(cell + i * 37.1);
+    if(r > 0.85){
+      float flakeSize = 0.12 + rand(cell + 99.0) * 0.22;
+      float twinkle = 0.75 + 0.25 * sin(u_time * 3.0 + r * 100.0);
+      float dist = length(frac - 0.5);
+      float alpha = smoothstep(flakeSize, flakeSize * 0.3, dist) * twinkle;
+      float brightness = 0.7 + 0.3 * (i / layers);
+      snow = max(snow, alpha * brightness);
+    }
+  }
+
+  vec3 snowColor = vec3(0.92, 0.96, 1.0);
+  // Slight blue tint on video
+  video = mix(video, video * vec3(0.85, 0.90, 1.05), 0.3);
+  vec3 col = mix(video, snowColor, snow);
+  gl_FragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    name: "The Alien",
+    emoji: "👽",
+    frag: `
+precision mediump float;
+uniform sampler2D u_tex;
+uniform float u_time;
+uniform vec2 u_mouse;
+varying vec2 v_uv;
+
+void main(){
+  vec2 uv = v_uv;
+
+  // Mouse-driven center
+  vec2 center = u_mouse;
+  // Default to screen center if no mouse
+  if(length(center) < 0.01) center = vec2(0.5);
+
+  vec2 delta = uv - center;
+  float dist = length(delta);
+
+  // Bulge/pinch + pulse
+  float pulse = 1.0 + 0.04 * sin(u_time * 2.5);
+  float strength = 0.55 * pulse;
+  float newDist = dist * (1.0 - strength * exp(-dist * dist * 4.0));
+  vec2 distUV = center + normalize(delta + vec2(0.0001)) * newDist;
+
+  // Mirror
+  distUV.x = 1.0 - distUV.x;
+  distUV = clamp(distUV, 0.0, 1.0);
+
+  vec3 col = texture2D(u_tex, distUV).rgb;
+
+  // Green alien tint
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  vec3 alienCol = vec3(lum * 0.4, lum * 1.3, lum * 0.5);
+  col = mix(col, alienCol, 0.55);
+
+  // Vignette
+  float vig = smoothstep(0.85, 0.35, dist);
+  col *= vig;
+  col = clamp(col, 0.0, 1.0);
+
+  gl_FragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    name: "Thermal",
+    emoji: "🌡️",
+    frag: `
+precision mediump float;
+uniform sampler2D u_tex;
+varying vec2 v_uv;
+
+vec3 thermal(float t){
+  // Cool blue → teal → yellow → hot red
+  t = clamp(t, 0.0, 1.0);
+  vec3 a = vec3(0.02, 0.04, 0.45);
+  vec3 b = vec3(0.0,  0.75, 0.85);
+  vec3 c = vec3(0.95, 0.9,  0.05);
+  vec3 d = vec3(0.98, 0.08, 0.02);
+  if(t < 0.33) return mix(a, b, t / 0.33);
+  if(t < 0.66) return mix(b, c, (t - 0.33) / 0.33);
+  return mix(c, d, (t - 0.66) / 0.34);
+}
+
+void main(){
+  vec2 uv = v_uv;
+  uv.x = 1.0 - uv.x;
+  vec3 col = texture2D(u_tex, uv).rgb;
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  // Invert for "heat" feel — bright = hot
+  gl_FragColor = vec4(thermal(lum), 1.0);
+}`
+  },
+  {
+    name: "Quad Mirror",
+    emoji: "🪞",
+    frag: `
+precision mediump float;
+uniform sampler2D u_tex;
+uniform float u_time;
+varying vec2 v_uv;
+
+void main(){
+  vec2 uv = v_uv;
+  // Tile into quadrants, each mirrored
+  uv = fract(uv * 2.0);
+  // Mirror each axis
+  if(uv.x > 0.5) uv.x = 1.0 - uv.x;
+  if(uv.y > 0.5) uv.y = 1.0 - uv.y;
+  // Scale back to 0..1 within each quadrant
+  uv = uv * 2.0;
+  uv.x = 1.0 - uv.x;
+  vec3 col = texture2D(u_tex, uv).rgb;
+  gl_FragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    name: "Neon Glitch",
+    emoji: "⚡",
+    frag: `
+precision mediump float;
+uniform sampler2D u_tex;
+uniform float u_time;
+uniform vec2 u_resolution;
+varying vec2 v_uv;
+
+float rand(float n){ return fract(sin(n)*43758.5453); }
+
+void main(){
+  vec2 uv = v_uv;
+  uv.x = 1.0 - uv.x;
+
+  // Glitch horizontal strips
+  float glitchSeed = floor(u_time * 12.0);
+  float row = floor(uv.y * 30.0);
+  float rr = rand(row + glitchSeed);
+  float glitch = 0.0;
+  if(rr > 0.85){
+    float amount = (rand(row * 3.7 + glitchSeed) - 0.5) * 0.06;
+    uv.x = fract(uv.x + amount);
+  }
+
+  vec3 colR = texture2D(u_tex, uv + vec2(0.006, 0.0)).rgb;
+  vec3 colG = texture2D(u_tex, uv).rgb;
+  vec3 colB = texture2D(u_tex, uv - vec2(0.006, 0.0)).rgb;
+  vec3 col = vec3(colR.r, colG.g, colB.b);
+
+  // Neon bloom
+  float lum = dot(col, vec3(0.299,0.587,0.114));
+  vec3 neon = col * vec3(1.8, 0.6, 2.2); // purple-pink cast
+  neon = clamp(neon, 0.0, 1.0);
+  float hi = step(0.7, lum);
+  col = mix(col, neon, 0.65) + neon * hi * 0.3;
+  col = clamp(col, 0.0, 1.0);
+
+  // Scanlines
+  float scan = sin(v_uv.y * u_resolution.y * 3.14159) * 0.5 + 0.5;
+  col *= 0.88 + 0.12 * scan;
+
+  gl_FragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    name: "Vintage Film",
+    emoji: "🎞️",
+    frag: `
+precision mediump float;
+uniform sampler2D u_tex;
+uniform float u_time;
+uniform vec2 u_resolution;
+varying vec2 v_uv;
+
+float rand(vec2 co){ return fract(sin(dot(co,vec2(12.9898,78.233)))*43758.5453); }
+
+void main(){
+  vec2 uv = v_uv;
+  uv.x = 1.0 - uv.x;
+
+  vec3 col = texture2D(u_tex, uv).rgb;
+
+  // Sepia
+  vec3 sepia;
+  sepia.r = dot(col, vec3(0.393, 0.769, 0.189));
+  sepia.g = dot(col, vec3(0.349, 0.686, 0.168));
+  sepia.b = dot(col, vec3(0.272, 0.534, 0.131));
+  col = mix(col, sepia, 0.8);
+
+  // Film grain
+  float grain = rand(uv + fract(u_time * 0.017)) * 0.12 - 0.06;
+  col += grain;
+
+  // Vignette
+  vec2 vig = (uv - 0.5) * 2.0;
+  float vigAmt = 1.0 - dot(vig, vig) * 0.35;
+  col *= clamp(vigAmt, 0.0, 1.0);
+
+  // Slight brightness flicker
+  float flicker = 0.96 + 0.04 * sin(u_time * 23.0 + rand(vec2(floor(u_time*4.0)))*6.28);
+  col *= flicker;
+
+  col = clamp(col, 0.0, 1.0);
+  gl_FragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    name: "Pixelate",
+    emoji: "👾",
+    frag: `
+precision mediump float;
+uniform sampler2D u_tex;
+uniform vec2 u_resolution;
+varying vec2 v_uv;
+
+void main(){
+  float pixelSize = 10.0;
+  vec2 uv = floor(v_uv * u_resolution / pixelSize) * pixelSize / u_resolution;
+  uv.x = 1.0 - uv.x;
+  vec3 col = texture2D(u_tex, uv).rgb;
+  // Palette push
+  col = floor(col * 6.0) / 6.0;
+  gl_FragColor = vec4(col, 1.0);
+}`
+  },
+  {
+    name: "Oil Paint",
+    emoji: "🎨",
+    frag: `
+precision mediump float;
+uniform sampler2D u_tex;
+uniform vec2 u_resolution;
+varying vec2 v_uv;
+
+void main(){
+  vec2 uv = v_uv;
+  uv.x = 1.0 - uv.x;
+  vec2 px = 1.0 / u_resolution;
+  int radius = 4;
+  float r = float(radius);
+
+  // Kuwahara-like: find quadrant with lowest variance
+  vec3 meanBest = vec3(0.0);
+  float varMin = 1e9;
+
+  // Sample 4 quadrants
+  for(int q = 0; q < 4; q++){
+    vec2 sign = vec2(q < 2 ? 1.0 : -1.0, mod(float(q), 2.0) < 1.0 ? 1.0 : -1.0);
+    vec3 s1 = vec3(0.0), s2 = vec3(0.0);
+    float n = 0.0;
+    for(int i = 0; i <= 4; i++){
+      for(int j = 0; j <= 4; j++){
+        vec2 off = vec2(float(i), float(j)) * sign * px;
+        vec3 c = texture2D(u_tex, uv + off).rgb;
+        s1 += c; s2 += c*c; n++;
+      }
+    }
+    vec3 mean = s1 / n;
+    vec3 variance = s2/n - mean*mean;
+    float v = dot(variance, vec3(1.0));
+    if(v < varMin){ varMin = v; meanBest = mean; }
+  }
+
+  // Boost saturation
+  float lum = dot(meanBest, vec3(0.299, 0.587, 0.114));
+  meanBest = mix(vec3(lum), meanBest, 1.6);
+  meanBest = clamp(meanBest, 0.0, 1.0);
+  gl_FragColor = vec4(meanBest, 1.0);
+}`
+  },
+];
+
+// ─────────────────────────────────────────────
+//  WEBGL SETUP
+// ─────────────────────────────────────────────
+let gl, program, posBuffer, texLocation;
+let uTime, uMouse, uResolution, uTex;
+let video, videoTexture;
+let currentFilter = 0;
+let programs = [];
+let mouseX = 0.5, mouseY = 0.5;
+let lastFrame = 0, frameCount = 0, fps = 0;
+let animId = null;
+
+const canvas = document.getElementById('glcanvas');
+
+function compileShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(s));
+    return null;
+  }
+  return s;
+}
+
+function buildProgram(fragSrc) {
+  const vs = compileShader(gl.VERTEX_SHADER, VERT_SRC);
+  const fs = compileShader(gl.FRAGMENT_SHADER, fragSrc);
+  if (!vs || !fs) return null;
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(prog));
+    return null;
+  }
+  return prog;
+}
+
+function initGL() {
+  gl = canvas.getContext('webgl', { preserveDrawingBuffer: true, antialias: false });
+  if (!gl) { alert('WebGL not supported'); return false; }
+
+  // Compile all filter programs
+  for (const f of FILTERS) {
+    programs.push(buildProgram(f.frag));
+  }
+
+  // Fullscreen quad
+  posBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+
+  return true;
+}
+
+function setProgram(idx) {
+  program = programs[idx];
+  gl.useProgram(program);
+
+  const posLoc = gl.getAttribLocation(program, 'a_position');
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+  gl.enableVertexAttribArray(posLoc);
+  gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+  uTime       = gl.getUniformLocation(program, 'u_time');
+  uMouse      = gl.getUniformLocation(program, 'u_mouse');
+  uResolution = gl.getUniformLocation(program, 'u_resolution');
+  uTex        = gl.getUniformLocation(program, 'u_tex');
+}
+
+function initVideoTexture() {
+  videoTexture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, videoTexture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+}
+
+function render(ts) {
+  animId = requestAnimationFrame(render);
+
+  // FPS
+  frameCount++;
+  if (ts - lastFrame >= 1000) {
+    fps = frameCount;
+    frameCount = 0;
+    lastFrame = ts;
+    document.getElementById('fps-val').textContent = fps;
+  }
+
+  // Resize canvas to display
+  const W = canvas.clientWidth;
+  const H = canvas.clientHeight;
+  if (canvas.width !== W || canvas.height !== H) {
+    canvas.width = W;
+    canvas.height = H;
+  }
+
+  if (video && video.readyState >= 2) {
+    gl.bindTexture(gl.TEXTURE_2D, videoTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+  }
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  gl.useProgram(program);
+
+  if (uTime)       gl.uniform1f(uTime, ts * 0.001);
+  if (uMouse)      gl.uniform2f(uMouse, mouseX, mouseY);
+  if (uResolution) gl.uniform2f(uResolution, canvas.width, canvas.height);
+  if (uTex) {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, videoTexture);
+    gl.uniform1i(uTex, 0);
+  }
+
+  const posLoc = gl.getAttribLocation(program, 'a_position');
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+  gl.enableVertexAttribArray(posLoc);
+  gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+// ─────────────────────────────────────────────
+//  UI
+// ─────────────────────────────────────────────
+function buildCarousel() {
+  const track = document.getElementById('carousel');
+  track.innerHTML = '';
+  FILTERS.forEach((f, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'filter-chip' + (i === currentFilter ? ' active' : '');
+    chip.innerHTML = `
+      <div class="chip-preview"><div class="chip-icon">${f.emoji}</div></div>
+      <div class="chip-label">${f.name}</div>`;
+    chip.addEventListener('click', () => selectFilter(i));
+    track.appendChild(chip);
+  });
+}
+
+function selectFilter(idx) {
+  currentFilter = ((idx % FILTERS.length) + FILTERS.length) % FILTERS.length;
+  setProgram(currentFilter);
+  buildCarousel();
+  document.getElementById('filter-name-overlay').textContent = FILTERS[currentFilter].name.toUpperCase();
+}
+
+// Flash effect
+function doFlash() {
+  const fl = document.getElementById('flash-overlay');
+  fl.style.transition = 'opacity 0s';
+  fl.style.opacity = '1';
+  setTimeout(() => {
+    fl.style.transition = 'opacity 0.55s ease';
+    fl.style.opacity = '0';
+  }, 60);
+}
+
+// Capture
+function capture() {
+  doFlash();
+  setTimeout(() => {
+    const dataURL = canvas.toDataURL('image/png');
+    addToGallery(dataURL);
+  }, 80);
+}
+
+let galleryItems = [];
+
+function addToGallery(dataURL) {
+  galleryItems.unshift(dataURL);
+  const strip = document.getElementById('gallery-strip');
+  const img = document.createElement('img');
+  img.className = 'gallery-thumb';
+  img.src = dataURL;
+  img.title = 'Click to view';
+  img.addEventListener('click', () => openLightbox(dataURL));
+  strip.insertBefore(img, strip.firstChild);
+}
+
+function openLightbox(src) {
+  const lb = document.getElementById('lightbox');
+  document.getElementById('lightbox-img').src = src;
+  lb.classList.add('open');
+  document.getElementById('lightbox-dl').onclick = () => {
+    const a = document.createElement('a');
+    a.href = src;
+    a.download = `glsl-booth-${Date.now()}.png`;
+    a.click();
+  };
+}
+
+// ─────────────────────────────────────────────
+//  STARTUP
+// ─────────────────────────────────────────────
+document.getElementById('btn-start').addEventListener('click', async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+      audio: false
+    });
+
+    video = document.createElement('video');
+    video.srcObject = stream;
+    video.playsInline = true;
+    video.muted = true;
+    await video.play();
+
+    if (!initGL()) return;
+    initVideoTexture();
+    selectFilter(0);
+    buildCarousel();
+
+    // Hide permission screen
+    document.getElementById('permission-screen').style.display = 'none';
+
+    requestAnimationFrame(render);
+  } catch(e) {
+    console.error(e);
+    document.getElementById('permission-screen').querySelector('p').textContent =
+      '⚠ Camera access denied or unavailable. Please check permissions.';
+  }
+});
+
+// Mouse tracking
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  mouseX = (e.clientX - rect.left) / rect.width;
+  mouseY = 1.0 - (e.clientY - rect.top) / rect.height;
+});
+
+// Buttons
+document.getElementById('btn-capture').addEventListener('click', capture);
+document.getElementById('btn-prev').addEventListener('click', () => selectFilter(currentFilter - 1));
+document.getElementById('btn-next').addEventListener('click', () => selectFilter(currentFilter + 1));
+
+// Keyboard
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); capture(); }
+  if (e.code === 'ArrowLeft') selectFilter(currentFilter - 1);
+  if (e.code === 'ArrowRight') selectFilter(currentFilter + 1);
+});
+
+// Lightbox close
+document.getElementById('lightbox-close').addEventListener('click', () => {
+  document.getElementById('lightbox').classList.remove('open');
+});
+document.getElementById('lightbox').addEventListener('click', e => {
+  if (e.target === document.getElementById('lightbox')) {
+    document.getElementById('lightbox').classList.remove('open');
+  }
+});
+</script>
+</body>
+</html>

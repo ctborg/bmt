@@ -95,7 +95,7 @@
     max-height: 100%;
     width: auto;
     height: auto;
-    aspect-ratio: 4/3;
+    /* aspect-ratio set dynamically from video.videoWidth/Height after stream starts */
     display: block;
     object-fit: contain;
   }
@@ -1296,7 +1296,7 @@ function openLightbox(src) {
 document.getElementById('btn-start').addEventListener('click', async () => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+      video: { facingMode: 'user' },
       audio: false
     });
 
@@ -1305,6 +1305,11 @@ document.getElementById('btn-start').addEventListener('click', async () => {
     video.playsInline = true;
     video.muted = true;
     await video.play();
+
+    // Sync canvas aspect ratio to actual camera output — avoids squishing
+    const vw = video.videoWidth  || 640;
+    const vh = video.videoHeight || 480;
+    canvas.style.aspectRatio = `${vw} / ${vh}`;
 
     if (!initGL()) return;
     initVideoTexture();

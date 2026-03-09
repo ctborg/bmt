@@ -1489,18 +1489,23 @@ let squishCyTarget = 0.5;
 const PINCH_CLOSE = 0.06;  // fully squished
 const PINCH_OPEN  = 0.18;  // no squish
 
+const MP_VERSION = '0.4.1646424915';
+
 function initMediaPipe() {
-  // Dynamically load MediaPipe Hands
+  // Pin to a specific stable version — unpinned CDN URLs resolve to broken builds
   const script1 = document.createElement('script');
-  script1.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js';
+  script1.src = `https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@${MP_VERSION}/camera_utils.js`;
   const script2 = document.createElement('script');
-  script2.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js';
+  script2.src = `https://cdn.jsdelivr.net/npm/@mediapipe/hands@${MP_VERSION}/hands.js`;
   script2.crossOrigin = 'anonymous';
+
+  // Ensure camera_utils is fully loaded before hands.js
+  script1.onload = () => document.head.appendChild(script2);
 
   script2.onload = () => {
     const hands = new Hands({
       locateFile: file =>
-        `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        `https://cdn.jsdelivr.net/npm/@mediapipe/hands@${MP_VERSION}/${file}`
     });
 
     hands.setOptions({
@@ -1532,7 +1537,7 @@ function initMediaPipe() {
   };
 
   document.head.appendChild(script1);
-  document.head.appendChild(script2);
+  // script2 is appended inside script1.onload above
 }
 
 function onHandResults(results) {

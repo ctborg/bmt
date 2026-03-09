@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>PHOTO BOOTH</title>
+<!-- Load MediaPipe Hands eagerly so WASM/assets fetch in parallel with page load.
+     unpkg serves the packed assets with correct headers that jsdelivr does not. -->
+<script src="https://unpkg.com/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap');
 
@@ -1489,50 +1492,40 @@ let squishCyTarget = 0.5;
 const PINCH_CLOSE = 0.06;  // fully squished
 const PINCH_OPEN  = 0.18;  // no squish
 
-const MP_VERSION = '0.4.1675469240';
-
 function initMediaPipe() {
-  // camera_utils is not used — we poll manually via requestAnimationFrame.
-  // Pin hands to a specific stable version to avoid broken CDN builds.
-  const script = document.createElement('script');
-  script.src = `https://cdn.jsdelivr.net/npm/@mediapipe/hands@${MP_VERSION}/hands.js`;
-  script.crossOrigin = 'anonymous';
+  // hands.js is already loaded from <head> — just initialize.
+  // unpkg serves the packed WASM assets with correct headers for the XHR loader.
+  const hands = new Hands({
+    locateFile: file =>
+      `https://unpkg.com/@mediapipe/hands@0.4.1675469240/${file}`
+  });
 
-  script.onload = () => {
-    const hands = new Hands({
-      locateFile: file =>
-        `https://cdn.jsdelivr.net/npm/@mediapipe/hands@${MP_VERSION}/${file}`
-    });
+  hands.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 0,       // lite model — fastest, fine for gesture
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence:  0.5,
+  });
 
-    hands.setOptions({
-      maxNumHands: 2,
-      modelComplexity: 0,       // lite model — fastest, fine for gesture
-      minDetectionConfidence: 0.7,
-      minTrackingConfidence:  0.5,
-    });
+  hands.onResults(onHandResults);
 
-    hands.onResults(onHandResults);
-
-    // Poll video frames into MediaPipe — throttled to ~20fps to save CPU
-    let lastMPFrame = 0;
-    function sendFrame(ts) {
-      requestAnimationFrame(sendFrame);
-      if (!video || video.readyState < 2) return;
-      const needsMP = currentFilter === SQUISH_FILTER_IDX || currentFilter === THINK_FILTER_IDX;
-      if (!needsMP) {
-        // When not on squish/think filter, decay smoothly to zero and skip MP
-        squishTarget = 0;
-        squishAmount += (squishTarget - squishAmount) * 0.12;
-        return;
-      }
-      if (ts - lastMPFrame < 48) return; // ~20fps
-      lastMPFrame = ts;
-      hands.send({ image: video });
-    }
+  // Poll video frames into MediaPipe — throttled to ~20fps to save CPU
+  let lastMPFrame = 0;
+  function sendFrame(ts) {
     requestAnimationFrame(sendFrame);
-  };
-
-  document.head.appendChild(script);
+    if (!video || video.readyState < 2) return;
+    const needsMP = currentFilter === SQUISH_FILTER_IDX || currentFilter === THINK_FILTER_IDX;
+    if (!needsMP) {
+      // When not on squish/think filter, decay smoothly to zero and skip MP
+      squishTarget = 0;
+      squishAmount += (squishTarget - squishAmount) * 0.12;
+      return;
+    }
+    if (ts - lastMPFrame < 48) return; // ~20fps
+    lastMPFrame = ts;
+    hands.send({ image: video });
+  }
+  requestAnimationFrame(sendFrame);
 }
 
 function onHandResults(results) {

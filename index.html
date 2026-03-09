@@ -1369,10 +1369,31 @@ function openLightbox(src) {
   const lb = document.getElementById('lightbox');
   document.getElementById('lightbox-img').src = src;
   lb.classList.add('open');
-  document.getElementById('lightbox-dl').onclick = () => {
+  document.getElementById('lightbox-dl').onclick = async () => {
+    const filename = `booth-${Date.now()}.png`;
+
+    // Convert dataURL to Blob for both share and download
+    const res  = await fetch(src);
+    const blob = await res.blob();
+
+    // Web Share API — triggers native share sheet on iOS/Android
+    // "Save Image" appears as a top option on iOS Safari
+    if (navigator.canShare && navigator.canShare({ files: [new File([blob], filename, { type: 'image/png' })] })) {
+      try {
+        await navigator.share({
+          files: [new File([blob], filename, { type: 'image/png' })],
+        });
+        return;
+      } catch (e) {
+        if (e.name === 'AbortError') return; // user cancelled, do nothing
+        // fall through to download on any other error
+      }
+    }
+
+    // Fallback: standard <a download> for desktop browsers
     const a = document.createElement('a');
     a.href = src;
-    a.download = `glsl-booth-${Date.now()}.png`;
+    a.download = filename;
     a.click();
   };
 }

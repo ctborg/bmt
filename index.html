@@ -4,8 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>PHOTO BOOTH</title>
-<!-- Load MediaPipe Hands eagerly so WASM/assets fetch in parallel with page load.
-     unpkg serves the packed assets with correct headers that jsdelivr does not. -->
+<!-- Load MediaPipe eagerly so WASM fetches in parallel with page load -->
 <script src="https://unpkg.com/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap');
@@ -1492,9 +1491,10 @@ let squishCyTarget = 0.5;
 const PINCH_CLOSE = 0.06;  // fully squished
 const PINCH_OPEN  = 0.18;  // no squish
 
-function initMediaPipe() {
-  // hands.js is already loaded from <head> — just initialize.
-  // unpkg serves the packed WASM assets with correct headers for the XHR loader.
+async function initMediaPipe() {
+  // hands.js is already loaded from <head>.
+  // MUST await initialize() — otherwise the WASM runtime asserts before
+  // the packed assets have finished loading, causing the RuntimeError.
   const hands = new Hands({
     locateFile: file =>
       `https://unpkg.com/@mediapipe/hands@0.4.1675469240/${file}`
@@ -1502,12 +1502,14 @@ function initMediaPipe() {
 
   hands.setOptions({
     maxNumHands: 2,
-    modelComplexity: 0,       // lite model — fastest, fine for gesture
+    modelComplexity: 0,
     minDetectionConfidence: 0.7,
     minTrackingConfidence:  0.5,
   });
 
   hands.onResults(onHandResults);
+
+  await hands.initialize();
 
   // Poll video frames into MediaPipe — throttled to ~20fps to save CPU
   let lastMPFrame = 0;
@@ -1516,7 +1518,6 @@ function initMediaPipe() {
     if (!video || video.readyState < 2) return;
     const needsMP = currentFilter === SQUISH_FILTER_IDX || currentFilter === THINK_FILTER_IDX;
     if (!needsMP) {
-      // When not on squish/think filter, decay smoothly to zero and skip MP
       squishTarget = 0;
       squishAmount += (squishTarget - squishAmount) * 0.12;
       return;

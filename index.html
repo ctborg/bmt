@@ -985,10 +985,22 @@ void main(){
     return;
   }
 
-  // Segmentation mask — read at mirrored UV to match video orientation
-  float seg = texture2D(u_seg_mask, vec2(1.0 - uv.x, uv.y)).r;
-  // Soften mask edges
-  seg = smoothstep(0.3, 0.7, seg);
+  // Segmentation mask — dilate by taking max over a small neighbourhood
+  // to fill in arm/finger edges the segmenter clips too tightly
+  vec2 maskUV = vec2(1.0 - uv.x, uv.y);
+  vec2 texel  = vec2(1.0 / 256.0); // approx mask resolution
+  float seg = 0.0;
+  seg = max(seg, texture2D(u_seg_mask, maskUV).r);
+  seg = max(seg, texture2D(u_seg_mask, maskUV + vec2( texel.x,  0.0)).r);
+  seg = max(seg, texture2D(u_seg_mask, maskUV + vec2(-texel.x,  0.0)).r);
+  seg = max(seg, texture2D(u_seg_mask, maskUV + vec2( 0.0,  texel.y)).r);
+  seg = max(seg, texture2D(u_seg_mask, maskUV + vec2( 0.0, -texel.y)).r);
+  seg = max(seg, texture2D(u_seg_mask, maskUV + vec2( texel.x*2.0,  0.0)).r);
+  seg = max(seg, texture2D(u_seg_mask, maskUV + vec2(-texel.x*2.0,  0.0)).r);
+  seg = max(seg, texture2D(u_seg_mask, maskUV + vec2( 0.0,  texel.y*2.0)).r);
+  seg = max(seg, texture2D(u_seg_mask, maskUV + vec2( 0.0, -texel.y*2.0)).r);
+  // Wide soft transition — avoids hard clip line at mask boundary
+  seg = smoothstep(0.05, 0.55, seg);
 
   // Smooth falloff within the face band
   float weight = smoothstep(span, span * 0.1, dy);

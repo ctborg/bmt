@@ -1338,27 +1338,24 @@ function doFlash() {
 }
 
 // Capture
+let pendingCapture = false;
+
+function doCapture() {
+  const offscreen = document.createElement('canvas');
+  offscreen.width  = canvas.width;
+  offscreen.height = canvas.height;
+  const ctx = offscreen.getContext('2d');
+  ctx.drawImage(canvas, 0, 0);
+  if (handOverlay && handOverlay.width > 0 && handOverlay.height > 0) {
+    ctx.drawImage(handOverlay, 0, 0, offscreen.width, offscreen.height);
+  }
+  const dataURL = offscreen.toDataURL('image/png');
+  addToGallery(dataURL);
+}
+
 function capture() {
   doFlash();
-  // Defer to next animation frame so the overlay (thought bubbles etc.) is
-  // guaranteed to have been redrawn *after* the flash, not captured mid-clear.
-  requestAnimationFrame(() => {
-    const offscreen = document.createElement('canvas');
-    offscreen.width  = canvas.width;
-    offscreen.height = canvas.height;
-    const ctx = offscreen.getContext('2d');
-
-    // Draw WebGL frame
-    ctx.drawImage(canvas, 0, 0);
-
-    // Draw overlay canvas scaled to match (handOverlay is CSS pixels, canvas is device pixels)
-    if (handOverlay && handOverlay.width > 0 && handOverlay.height > 0) {
-      ctx.drawImage(handOverlay, 0, 0, offscreen.width, offscreen.height);
-    }
-
-    const dataURL = offscreen.toDataURL('image/png');
-    addToGallery(dataURL);
-  });
+  pendingCapture = true;
 }
 
 let galleryItems = [];
@@ -1994,6 +1991,11 @@ render = function(ts) {
       hCtx.clearRect(0, 0, handOverlay.width, handOverlay.height);
     }
     drawThoughtBubbles(ts);
+  }
+  // Capture here — after WebGL + overlay are both fully drawn this frame
+  if (pendingCapture) {
+    pendingCapture = false;
+    doCapture();
   }
 };
 

@@ -1556,11 +1556,13 @@ async function initMediaPipe() {
           }
           faceBox = faceBoxSmooth;
 
-          // Drive squishCy/squishSpan directly from the face box.
+          // Drive squishCy/squishSpan/squishCx directly from the face box.
           // UV Y=0 is top, Y=1 is bottom — same convention as face detector. No flip.
           const faceCenterY  = faceBox.y + faceBox.h * 0.5;
+          const faceCenterX  = faceBox.x + faceBox.w * 0.5;
           const faceHalfH    = faceBox.h * 0.55; // slight padding
           squishCyTarget = faceCenterY;
+          squishCxTarget = faceCenterX;
           squishSpan     = faceHalfH;
         } else {
           if (faceBoxSmooth) {
@@ -1602,7 +1604,6 @@ function onHandResults(results) {
   }
 
   let bestPinch = 0;
-  let bestCx = 0.5;
 
   for (const landmarks of results.multiHandLandmarks) {
     const thumb = landmarks[4];
@@ -1634,14 +1635,12 @@ function onHandResults(results) {
 
     if (pinchStrength > bestPinch) {
       bestPinch = pinchStrength;
-      bestCx    = pinchMidX;
     }
 
     drawHand(landmarks, pinchStrength, inFaceZone);
   }
 
-  squishTarget   = bestPinch;
-  squishCxTarget = bestCx;
+  squishTarget = bestPinch;
 
   const lerpRate = squishTarget > squishAmount ? 0.18 : 0.10;
   squishAmount += (squishTarget   - squishAmount)  * lerpRate;

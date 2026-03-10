@@ -1341,7 +1341,21 @@ function doFlash() {
 function capture() {
   doFlash();
   setTimeout(() => {
-    const dataURL = canvas.toDataURL('image/png');
+    // Composite WebGL canvas + 2D overlay (thought bubbles, hand skeleton) into one image
+    const offscreen = document.createElement('canvas');
+    offscreen.width  = canvas.width;
+    offscreen.height = canvas.height;
+    const ctx = offscreen.getContext('2d');
+
+    // Draw WebGL frame
+    ctx.drawImage(canvas, 0, 0);
+
+    // Draw overlay canvas scaled to match (handOverlay is sized to CSS pixels, canvas to device pixels)
+    if (handOverlay && handOverlay.width > 0 && handOverlay.height > 0) {
+      ctx.drawImage(handOverlay, 0, 0, offscreen.width, offscreen.height);
+    }
+
+    const dataURL = offscreen.toDataURL('image/png');
     addToGallery(dataURL);
   }, 80);
 }

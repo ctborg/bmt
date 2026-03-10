@@ -980,7 +980,7 @@ void main(){
   float dy   = abs(uv.y - u_squish_cy);
   float span = max(u_squish_span, 0.04);
 
-  if(dy > span * 1.1){
+  if(dy > span * 1.2){
     gl_FragColor = texture2D(u_tex, vec2(1.0 - uv.x, uv.y));
     return;
   }
@@ -1645,9 +1645,11 @@ async function initMediaPipe() {
           }
           faceBox = faceBoxSmooth;
 
-          const faceCenterY = faceBox.y + faceBox.h * 0.5;
+          // BlazeFace boxes tend to be tight and sit high (eyes/nose focus).
+          // Shift center down by 10% of box height and expand span to cover chin.
+          const faceCenterY = faceBox.y + faceBox.h * 0.6;  // shift down toward chin
           const faceCenterX = (bb.originX + bb.width * 0.5) / vw;
-          const faceHalfH   = faceBox.h * 0.55;
+          const faceHalfH   = faceBox.h * 0.8;  // cover full face including chin
           squishCyTarget = faceCenterY;
           squishCxTarget = faceCenterX;
           squishSpan     = faceHalfH;

@@ -1578,36 +1578,37 @@ async function initMediaPipe() {
       return;
     }
 
-    // Face detection ~15fps
+    // Face detection + segmentation ~15fps
     if (ts - lastFaceFrame > 66) {
       lastFaceFrame = ts;
+
+      // Segmentation via callback API
       try {
-        // Segmentation — run alongside face detection at same rate
-        const segResult = imageSegmenter.segmentForVideo(video, ts);
-        if (segResult.confidenceMasks && segResult.confidenceMasks[0]) {
-          const mask = segResult.confidenceMasks[0];
-          const w = mask.width, h = mask.height;
-          const floatData = mask.getAsFloat32Array();
-          // Convert float32 mask to RGBA uint8 (R channel = confidence)
-          const rgba = new Uint8Array(w * h * 4);
-          for (let i = 0; i < w * h; i++) {
-            const v = Math.round(floatData[i] * 255);
-            rgba[i*4]   = v;
-            rgba[i*4+1] = v;
-            rgba[i*4+2] = v;
-            rgba[i*4+3] = 255;
+        imageSegmenter.segmentForVideo(video, ts, (segResult) => {
+          if (segResult.confidenceMasks && segResult.confidenceMasks[0]) {
+            const mask = segResult.confidenceMasks[0];
+            const w = mask.width, h = mask.height;
+            const floatData = mask.getAsFloat32Array();
+            const rgba = new Uint8Array(w * h * 4);
+            for (let i = 0; i < w * h; i++) {
+              const v = Math.round(floatData[i] * 255);
+              rgba[i*4] = rgba[i*4+1] = rgba[i*4+2] = v;
+              rgba[i*4+3] = 255;
+            }
+            gl.bindTexture(gl.TEXTURE_2D, segMaskTexture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+            mask.close();
           }
-          gl.bindTexture(gl.TEXTURE_2D, segMaskTexture);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
-          mask.close();
-        }
-      } catch(e) { /* segmenter not ready */ }
+        });
+      } catch(e) { /* segmenter not ready yet */ }
+
+      // Face detection (synchronous)
+      try {
         const res = faceDetector.detectForVideo(video, ts);
         if (res.detections && res.detections.length > 0) {
           const bb = res.detections[0].boundingBox;
           const vw = video.videoWidth  || canvas.width;
           const vh = video.videoHeight || canvas.height;
-          // Normalize and mirror X to match our flipped feed
           const raw = {
             x: 1 - (bb.originX + bb.width) / vw,
             y:      bb.originY              / vh,
@@ -1625,12 +1626,9 @@ async function initMediaPipe() {
           }
           faceBox = faceBoxSmooth;
 
-          // Drive squishCy/squishSpan/squishCx directly from the face box.
-          // UV Y=0 is top, Y=1 is bottom — same convention as face detector. No flip.
-          // X: use unmirrored detector coords (shader handles mirror at sample time).
-          const faceCenterY  = faceBox.y + faceBox.h * 0.5;
-          const faceCenterX  = (bb.originX + bb.width * 0.5) / vw; // unmirrored
-          const faceHalfH    = faceBox.h * 0.55; // slight padding
+          const faceCenterY = faceBox.y + faceBox.h * 0.5;
+          const faceCenterX = (bb.originX + bb.width * 0.5) / vw;
+          const faceHalfH   = faceBox.h * 0.55;
           squishCyTarget = faceCenterY;
           squishCxTarget = faceCenterX;
           squishSpan     = faceHalfH;

@@ -1173,25 +1173,37 @@ function updateSnowAccumulation() {
   if (segMaskImageData) {
     const mw = segMaskW, mh = segMaskH;
     const px = segMaskImageData.data;
-    const THRESH = 120; // foreground confidence threshold (0-255)
+    const THRESH = 100;
 
     for (let col = 0; col < W; col++) {
-      // Map column to mask X — mask is unmirrored, our display is mirrored,
-      // so mirror the lookup: col=0 (left on screen) → right side of mask
+      // Mirror X: col=0 is left on screen, which is right side of unmirrored mask
       const maskX = Math.floor((1.0 - col / W) * mw);
       const clampedX = Math.max(0, Math.min(mw - 1, maskX));
 
+      // Find the topmost foreground pixel in this column
       let topRow = -1;
       for (let row = 0; row < mh; row++) {
         const idx = (row * mw + clampedX) * 4;
         if (px[idx] > THRESH) { topRow = row; break; }
       }
 
+      // Validate: require that at least 20% of this column below topRow is also
+      // foreground — filters out isolated noise pixels and thin background objects
+      let valid = false;
       if (topRow >= 0) {
-        const detectedY = 1.0 - (topRow / mh); // UV space: 1=top, 0=bottom
+        let fgCount = 0;
+        const checkRows = Math.floor(mh * 0.2);
+        for (let r = topRow; r < Math.min(mh, topRow + checkRows); r++) {
+          if (px[(r * mw + clampedX) * 4] > THRESH) fgCount++;
+        }
+        valid = fgCount > checkRows * 0.6;
+      }
+
+      if (valid) {
+        const detectedY = 1.0 - (topRow / mh);
         surfaceVotes[col] += (detectedY - surfaceVotes[col]) * 0.08;
       } else {
-        surfaceVotes[col] *= 0.995;
+        surfaceVotes[col] *= 0.992;
       }
       snowSurface[col] = surfaceVotes[col];
     }

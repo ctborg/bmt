@@ -536,6 +536,8 @@ uniform float u_time;
 uniform vec2 u_resolution;
 uniform vec2 u_mouse;
 uniform float u_mouse_speed;
+uniform vec2  u_wipe_pos;    // best hand position in UV (mirrored), 0..1
+uniform float u_wipe_speed;  // 0..1, speed of wipe gesture
 varying vec2 v_uv;
 
 float rand(vec2 n){ return fract(sin(dot(n,vec2(12.9898,78.233)))*43758.5453); }
@@ -651,23 +653,52 @@ void main(){
   // Flakes fade out as they near/hit the pile
   falling *= (1.0 - inPile * 0.7);
 
-  // ── Hand-blown dust ──────────────────────────────────────
-  float dust = 0.0;
-  if(u_mouse_speed > 0.004){
-    vec2 mpos = vec2(1.0 - u_mouse.x, 1.0 - u_mouse.y);
-    for(float d = 0.0; d < 8.0; d++){
-      // Each particle: unique angle, travels outward over lifetime
-      float seed   = d * 7.3 + floor(u_time * 6.0) * 0.1;
-      float angle  = rand1(seed) * 6.2831;
-      float t      = fract(u_time*(0.5+rand1(d*3.1)*0.4) + rand1(d*11.0));
-      float radius = 0.01 + t * 0.12;
-      float life   = (1.0 - t) * (1.0 - t); // quick fade
-      vec2  ppos   = mpos + vec2(cos(angle)*radius, sin(angle)*radius*0.6);
-      float dp     = length(uv - ppos);
-      float ps     = 0.004 + rand1(d)*0.005;
-      dust = max(dust, smoothstep(ps, 0.0, dp) * life * min(1.0, u_mouse_speed*5.0));
+  // ── Scatter particles — ejected when hand wipes the pile ────────────
+  // Particles burst from wipe position at surfY, arc upward then fall under gravity.
+  // Each particle is seeded uniquely; lifetime cycles via fract(time).
+  float scatter = 0.0;
+  if(u_wipe_speed > 0.02 && disturb > 0.05){
+    vec2 aspect = vec2(u_resolution.x / u_resolution.y, 1.0);
+
+    // Burst origin: wipe X, surface Y at that column
+    vec3 originSd  = texture2D(u_snow_tex, vec2(u_wipe_pos.x, 0.5)).rgb;
+    float originSY = originSd.r;
+    vec2  origin   = vec2(u_wipe_pos.x, 1.0 - originSY); // flip to screen UV
+
+    for(float p = 0.0; p < 24.0; p++){
+      float seed = p * 13.7 + floor(u_time * 8.0) * 0.17;
+
+      // Unique launch angle: upward hemisphere biased in wipe direction
+      float angle  = (rand1(seed)       - 0.5) * 3.14159; // -90..+90 from up
+      float speed  = 0.04 + rand1(seed + 1.0) * 0.18;     // variable launch speed
+      vec2  vel0   = vec2(sin(angle), -cos(angle)) * speed; // starts going up (UV y up = negative)
+
+      // Particle lifetime: 0..1, staggered so they don't all burst at once
+      float tOffset = rand1(seed + 2.0);
+      float t       = fract(u_time * (1.2 + rand1(seed+3.0)*0.8) + tOffset);
+      float life    = 1.0 - t; // opacity: bright at birth, fades out
+
+      // Ballistic position: x=vel0.x*t, y=vel0.y*t + 0.5*g*t^2
+      float gravity = 0.28;
+      vec2  pos     = origin + vec2(vel0.x * t,
+                                    vel0.y * t + 0.5 * gravity * t * t);
+
+      // Particle size shrinks over lifetime
+      float sz = (0.003 + rand1(seed+4.0) * 0.004) * (0.3 + life * 0.7);
+
+      // Distance to particle center
+      vec2  delta = (uv - pos) * aspect;
+      float d     = length(delta);
+
+      float shape = smoothstep(sz, sz * 0.1, d);
+
+      // Gate: only show during active wipe, fade with life, scale with wipe speed
+      float alpha = shape * life * life * min(1.0, u_wipe_speed * 4.0)
+                  * smoothstep(0.0, 0.08, t); // brief fade-in at birth
+
+      scatter = max(scatter, alpha);
     }
-    dust = clamp(dust, 0.0, 0.9);
+    scatter = clamp(scatter, 0.0, 1.0);
   }
 
   // ── Composite ────────────────────────────────────────────
@@ -680,12 +711,11 @@ void main(){
   // Flakes: white with faint blue tint, blended additively for glow
   vec3 flakeCol = vec3(0.93, 0.96, 1.00);
   col = mix(col, col + flakeCol * 0.6, falling * 0.9);
-  col = clamp(col, 0.0, 1.0);
 
-  // Dust: soft white puffs
-  col = mix(col, vec3(0.97, 0.98, 1.0), dust * 0.85);
-  col = clamp(col, 0.0, 1.0);
+  // Scatter: bright white particles with slight blue tint
+  col = mix(col, vec3(0.96, 0.98, 1.0), scatter * 0.92);
 
+  col = clamp(col, 0.0, 1.0);
   gl_FragColor = vec4(col, 1.0);
 }`
   },
@@ -1022,12 +1052,14 @@ void main(){
 let gl, program, posBuffer, texLocation;
 let uTime, uMouse, uResolution, uTex, uSnowTex, uMouseSpeed;
 let uSquish, uSquishCx, uSquishCy, uSquishSpan, uSegMask;
+let uWipePos, uWipeSpeed;
 let video, videoTexture, segMaskTexture;
 let currentFilter = 0;
 let programs = [];
 let mouseX = 0.5, mouseY = 0.5;
 let lastMouseX = 0.5, lastMouseY = 0.5;
 let mouseSpeed = 0;
+let wipeX = 0.5, wipeY = 0.5, wipeSpeed = 0; // best hand wipe position + speed
 let lastFrame = 0, frameCount = 0, fps = 0;
 let animId = null;
 
@@ -1146,6 +1178,8 @@ function setProgram(idx) {
   uSquishCy   = gl.getUniformLocation(program, 'u_squish_cy');
   uSquishSpan = gl.getUniformLocation(program, 'u_squish_span');
   uSegMask    = gl.getUniformLocation(program, 'u_seg_mask');
+  uWipePos    = gl.getUniformLocation(program, 'u_wipe_pos');
+  uWipeSpeed  = gl.getUniformLocation(program, 'u_wipe_speed');
 }
 
 function initVideoTexture() {
@@ -1332,6 +1366,7 @@ function render(ts) {
 
   // Mouse speed (decays each frame)
   mouseSpeed *= 0.82;
+  wipeSpeed  *= 0.85;
 
   if (video && video.readyState >= 2) {
     gl.activeTexture(gl.TEXTURE0);
@@ -1356,6 +1391,8 @@ function render(ts) {
   if (uMouse)      gl.uniform2f(uMouse, mouseX, mouseY);
   if (uResolution) gl.uniform2f(uResolution, canvas.width, canvas.height);
   if (uMouseSpeed) gl.uniform1f(uMouseSpeed, mouseSpeed);
+  if (uWipePos)    gl.uniform2f(uWipePos,    wipeX, wipeY);
+  if (uWipeSpeed)  gl.uniform1f(uWipeSpeed,  wipeSpeed);
   if (uSquish)     gl.uniform1f(uSquish,     squishAmount);
   if (uSquishCx)   gl.uniform1f(uSquishCx,   squishCx);
   if (uSquishCy)   gl.uniform1f(uSquishCy,   squishCy);
@@ -1748,6 +1785,20 @@ function onHandResults(results) {
 
   // Store landmarks for snow wipe (used even when not on squish filter)
   currentHandLandmarks = results.multiHandLandmarks || [];
+
+  // Update wipe position from palm center (landmark 9) — used for scatter particles
+  if (currentHandLandmarks.length > 0) {
+    const palm = currentHandLandmarks[0][9];
+    if (palm) {
+      const newWipeX = 1 - palm.x; // mirror to match display
+      const newWipeY = palm.y;
+      const dx = newWipeX - wipeX, dy = newWipeY - wipeY;
+      const spd = Math.sqrt(dx*dx + dy*dy) * 40.0;
+      wipeSpeed = Math.min(1.0, spd + wipeSpeed * 0.5);
+      wipeX = newWipeX;
+      wipeY = newWipeY;
+    }
+  }
 
   // Draw subtle face box outline
   if (faceBox && currentFilter === SQUISH_FILTER_IDX) {

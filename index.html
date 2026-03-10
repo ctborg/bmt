@@ -994,10 +994,6 @@ void main(){
   float stretch = 1.0 + u_squish * 1.6 * weight;
   uv.x = cx + (uv.x - cx) / stretch;
 
-  // Slight vertical compression within the band only
-  float vCompress = 1.0 + u_squish * 0.2 * weight;
-  uv.y = u_squish_cy + (uv.y - u_squish_cy) * vCompress;
-
   uv = clamp(uv, 0.001, 0.999);
   gl_FragColor = texture2D(u_tex, uv);
 }`
@@ -1560,11 +1556,11 @@ async function initMediaPipe() {
           }
           faceBox = faceBoxSmooth;
 
-          // Drive squishCy/squishSpan directly from the face box so the
-          // shader warp band is always exactly the size of the face
+          // Drive squishCy/squishSpan directly from the face box.
+          // UV Y=0 is top, Y=1 is bottom — same convention as face detector. No flip.
           const faceCenterY  = faceBox.y + faceBox.h * 0.5;
           const faceHalfH    = faceBox.h * 0.55; // slight padding
-          squishCyTarget = 1.0 - faceCenterY;    // flip to UV space (0=bottom)
+          squishCyTarget = faceCenterY;
           squishSpan     = faceHalfH;
         } else {
           if (faceBoxSmooth) {

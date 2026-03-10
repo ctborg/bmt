@@ -966,38 +966,42 @@ void main(){
     frag: `
 precision mediump float;
 uniform sampler2D u_tex;
+uniform sampler2D u_seg_mask;  // R = foreground confidence 0..1
 uniform float u_squish;       // 0=none, 1=full squish
-uniform float u_squish_cx;    // pinch center X (0..1, mirrored)
-uniform float u_squish_cy;    // face center Y (0..1, UV space)
+uniform float u_squish_cx;    // face center X (unmirrored, 0..1)
+uniform float u_squish_cy;    // face center Y (0..1)
 uniform float u_squish_span;  // face half-height (0..1)
 varying vec2 v_uv;
 
 void main(){
   vec2 uv = v_uv;
 
-  // Work in unmirrored UV space so cx from the face detector is used directly.
-  // We'll flip X at the very end when sampling.
-
   // Hard clip: pixels outside the face band are never warped
   float dy   = abs(uv.y - u_squish_cy);
   float span = max(u_squish_span, 0.04);
 
-  // Outside face region — pass through unchanged (mirror only for sample)
   if(dy > span * 1.1){
     gl_FragColor = texture2D(u_tex, vec2(1.0 - uv.x, uv.y));
     return;
   }
 
-  // Smooth falloff strictly within the face band
+  // Segmentation mask — read at mirrored UV to match video orientation
+  float seg = texture2D(u_seg_mask, vec2(1.0 - uv.x, uv.y)).r;
+  // Soften mask edges
+  seg = smoothstep(0.3, 0.7, seg);
+
+  // Smooth falloff within the face band
   float weight = smoothstep(span, span * 0.1, dy);
   weight = weight * weight;
+
+  // Gate warp by segmentation: background pixels untouched
+  weight *= seg;
 
   float cx = u_squish_cx;
   float stretch = 1.0 + u_squish * 1.6 * weight;
   uv.x = cx + (uv.x - cx) / stretch;
 
   uv = clamp(uv, 0.001, 0.999);
-  // Mirror X when sampling
   gl_FragColor = texture2D(u_tex, vec2(1.0 - uv.x, uv.y));
 }`
   },
@@ -1005,8 +1009,8 @@ void main(){
 // ─────────────────────────────────────────────
 let gl, program, posBuffer, texLocation;
 let uTime, uMouse, uResolution, uTex, uSnowTex, uMouseSpeed;
-let uSquish, uSquishCx, uSquishCy, uSquishSpan;
-let video, videoTexture;
+let uSquish, uSquishCx, uSquishCy, uSquishSpan, uSegMask;
+let video, videoTexture, segMaskTexture;
 let currentFilter = 0;
 let programs = [];
 let mouseX = 0.5, mouseY = 0.5;
@@ -1087,6 +1091,17 @@ function initGL() {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, SNOW_COLS, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, snowTexData);
 
+  // Segmentation mask texture (updated by MediaPipe selfie segmenter)
+  segMaskTexture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, segMaskTexture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  // Initialize with a white (all-foreground) mask so squish works before segmenter fires
+  const blankMask = new Uint8Array(4 * 4 * 4).fill(255);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 4, 4, 0, gl.RGBA, gl.UNSIGNED_BYTE, blankMask);
+
   // Offscreen canvas for CPU-side edge detection
   edgeCanvas = document.createElement('canvas');
   edgeCanvas.width  = SNOW_COLS;
@@ -1115,6 +1130,7 @@ function setProgram(idx) {
   uSquishCx   = gl.getUniformLocation(program, 'u_squish_cx');
   uSquishCy   = gl.getUniformLocation(program, 'u_squish_cy');
   uSquishSpan = gl.getUniformLocation(program, 'u_squish_span');
+  uSegMask    = gl.getUniformLocation(program, 'u_seg_mask');
 }
 
 function initVideoTexture() {
@@ -1280,6 +1296,11 @@ function render(ts) {
   if (uSquishCx)   gl.uniform1f(uSquishCx,   squishCx);
   if (uSquishCy)   gl.uniform1f(uSquishCy,   squishCy);
   if (uSquishSpan) gl.uniform1f(uSquishSpan, squishSpan);
+  if (uSegMask && segMaskTexture) {
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, segMaskTexture);
+    gl.uniform1i(uSegMask, 2);
+  }
 
   // Texture unit 0 — video
   if (uTex) {
@@ -1489,7 +1510,8 @@ document.querySelector('.stage').appendChild(handOverlay);
 const hCtx = handOverlay.getContext('2d');
 
 // Smoothed squish target
-let squishTarget = 0;
+let squishTarget   = 0;
+let squishVelocity = 0;  // spring velocity for bouncy overshoot on release
 let squishCxTarget = 0.5;
 let squishCyTarget = 0.5;
 
@@ -1498,8 +1520,8 @@ const PINCH_CLOSE = 0.06;  // fully squished
 const PINCH_OPEN  = 0.18;  // no squish
 
 async function initMediaPipe() {
-  // ── Face Detector (BlazeFace via MediaPipe Tasks Vision) ──────────────
-  const { FaceDetector, FilesetResolver } = await import(
+  // ── Tasks Vision (Face Detector + Selfie Segmenter) ───────────────────
+  const { FaceDetector, ImageSegmenter, FilesetResolver } = await import(
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/vision_bundle.mjs'
   );
   const vision = await FilesetResolver.forVisionTasks(
@@ -1512,6 +1534,16 @@ async function initMediaPipe() {
     },
     runningMode: 'VIDEO',
     minDetectionConfidence: 0.5,
+  });
+
+  const imageSegmenter = await ImageSegmenter.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite',
+      delegate: 'GPU',
+    },
+    runningMode: 'VIDEO',
+    outputCategoryMask: false,
+    outputConfidenceMasks: true,
   });
 
   // ── Hands ─────────────────────────────────────────────────────────────
@@ -1539,7 +1571,9 @@ async function initMediaPipe() {
     const needsMP = currentFilter === SQUISH_FILTER_IDX || currentFilter === THINK_FILTER_IDX;
     if (!needsMP) {
       squishTarget = 0;
-      squishAmount += (squishTarget - squishAmount) * 0.12;
+      const force    = (0 - squishAmount) * 0.12;
+      squishVelocity = squishVelocity * 0.55 + force;
+      squishAmount   = Math.max(0, squishAmount + squishVelocity);
       faceBox = null; faceBoxSmooth = null;
       return;
     }
@@ -1548,6 +1582,26 @@ async function initMediaPipe() {
     if (ts - lastFaceFrame > 66) {
       lastFaceFrame = ts;
       try {
+        // Segmentation — run alongside face detection at same rate
+        const segResult = imageSegmenter.segmentForVideo(video, ts);
+        if (segResult.confidenceMasks && segResult.confidenceMasks[0]) {
+          const mask = segResult.confidenceMasks[0];
+          const w = mask.width, h = mask.height;
+          const floatData = mask.getAsFloat32Array();
+          // Convert float32 mask to RGBA uint8 (R channel = confidence)
+          const rgba = new Uint8Array(w * h * 4);
+          for (let i = 0; i < w * h; i++) {
+            const v = Math.round(floatData[i] * 255);
+            rgba[i*4]   = v;
+            rgba[i*4+1] = v;
+            rgba[i*4+2] = v;
+            rgba[i*4+3] = 255;
+          }
+          gl.bindTexture(gl.TEXTURE_2D, segMaskTexture);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+          mask.close();
+        }
+      } catch(e) { /* segmenter not ready */ }
         const res = faceDetector.detectForVideo(video, ts);
         if (res.detections && res.detections.length > 0) {
           const bb = res.detections[0].boundingBox;
@@ -1615,7 +1669,9 @@ function onHandResults(results) {
 
   if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
     squishTarget = 0;
-    squishAmount += (0 - squishAmount) * 0.10;
+    const force    = (0 - squishAmount) * 0.12;
+    squishVelocity = squishVelocity * 0.55 + force;
+    squishAmount   = Math.max(0, squishAmount + squishVelocity);
     return;
   }
 
@@ -1658,10 +1714,15 @@ function onHandResults(results) {
 
   squishTarget = bestPinch;
 
-  const lerpRate = squishTarget > squishAmount ? 0.18 : 0.10;
-  squishAmount += (squishTarget   - squishAmount)  * lerpRate;
-  squishCx     += (squishCxTarget - squishCx)      * 0.2;
-  squishCy     += (squishCyTarget - squishCy)      * 0.15;
+  // Spring physics: stiffness + damping gives snappy squeeze, bouncy release
+  const stiffness = squishTarget > squishAmount ? 0.25 : 0.12; // fast in, slower out
+  const damping   = 0.55;
+  const force     = (squishTarget - squishAmount) * stiffness;
+  squishVelocity  = squishVelocity * damping + force;
+  squishAmount    = Math.max(0, Math.min(1.3, squishAmount + squishVelocity)); // allow slight overshoot >1
+
+  squishCx += (squishCxTarget - squishCx) * 0.2;
+  squishCy += (squishCyTarget - squishCy) * 0.15;
 }
 
 function drawHand(landmarks, pinchStrength, inFaceZone) {

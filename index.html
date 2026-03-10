@@ -1340,8 +1340,9 @@ function doFlash() {
 // Capture
 function capture() {
   doFlash();
-  setTimeout(() => {
-    // Composite WebGL canvas + 2D overlay (thought bubbles, hand skeleton) into one image
+  // Defer to next animation frame so the overlay (thought bubbles etc.) is
+  // guaranteed to have been redrawn *after* the flash, not captured mid-clear.
+  requestAnimationFrame(() => {
     const offscreen = document.createElement('canvas');
     offscreen.width  = canvas.width;
     offscreen.height = canvas.height;
@@ -1350,14 +1351,14 @@ function capture() {
     // Draw WebGL frame
     ctx.drawImage(canvas, 0, 0);
 
-    // Draw overlay canvas scaled to match (handOverlay is sized to CSS pixels, canvas to device pixels)
+    // Draw overlay canvas scaled to match (handOverlay is CSS pixels, canvas is device pixels)
     if (handOverlay && handOverlay.width > 0 && handOverlay.height > 0) {
       ctx.drawImage(handOverlay, 0, 0, offscreen.width, offscreen.height);
     }
 
     const dataURL = offscreen.toDataURL('image/png');
     addToGallery(dataURL);
-  }, 80);
+  });
 }
 
 let galleryItems = [];
@@ -1983,9 +1984,15 @@ const _origRender = render;
 render = function(ts) {
   _origRender(ts);
   if (currentFilter === THINK_FILTER_IDX) {
-    handOverlay.width  = canvas.clientWidth;
-    handOverlay.height = canvas.clientHeight;
-    hCtx.clearRect(0, 0, handOverlay.width, handOverlay.height);
+    // Only resize (which implicitly clears) when dimensions actually changed
+    const needsResize = handOverlay.width  !== canvas.clientWidth
+                     || handOverlay.height !== canvas.clientHeight;
+    if (needsResize) {
+      handOverlay.width  = canvas.clientWidth;
+      handOverlay.height = canvas.clientHeight;
+    } else {
+      hCtx.clearRect(0, 0, handOverlay.width, handOverlay.height);
+    }
     drawThoughtBubbles(ts);
   }
 };

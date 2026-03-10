@@ -4,8 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>PHOTO BOOTH</title>
-<!-- Load MediaPipe eagerly so WASM fetches in parallel with page load -->
-<script src="https://unpkg.com/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap');
 
@@ -966,40 +964,40 @@ void main(){
     frag: `
 precision mediump float;
 uniform sampler2D u_tex;
-uniform float u_time;
-uniform vec2  u_resolution;
-uniform float u_squish;      // 0=none, 1=full squish
-uniform float u_squish_cx;   // pinch center X (0..1, mirrored)
-uniform float u_squish_cy;   // pinch center Y (0..1)
-uniform float u_squish_span; // vertical band half-width (0..1)
+uniform float u_squish;       // 0=none, 1=full squish
+uniform float u_squish_cx;    // pinch center X (0..1, mirrored)
+uniform float u_squish_cy;    // face center Y (0..1, UV space)
+uniform float u_squish_span;  // face half-height (0..1)
 varying vec2 v_uv;
 
 void main(){
   vec2 uv = v_uv;
   uv.x = 1.0 - uv.x; // mirror
 
-  // How far this pixel is from the squish center Y, within the band
-  float dy     = abs(uv.y - u_squish_cy);
-  float span   = max(u_squish_span, 0.05);
-  // Falloff: cosine envelope — full effect at center, zero at band edges
-  float weight = smoothstep(span, 0.0, dy);
-  weight = weight * weight; // sharpen falloff
+  // Hard clip: pixels outside the face band are never warped
+  float dy   = abs(uv.y - u_squish_cy);
+  float span = max(u_squish_span, 0.04);
 
-  // Horizontal stretch: pull UVs toward/away from center X
-  // squish > 0 → squeeze (stretch wide) → map wider content into view
+  // Outside face region — pass through unchanged
+  if(dy > span * 1.1){
+    gl_FragColor = texture2D(u_tex, uv);
+    return;
+  }
+
+  // Smooth falloff strictly within the face band
+  float weight = smoothstep(span, span * 0.1, dy);
+  weight = weight * weight;
+
   float cx = u_squish_cx;
-  // squish=1 means sample 2x the horizontal range → head looks 2x wide
   float stretch = 1.0 + u_squish * 1.6 * weight;
   uv.x = cx + (uv.x - cx) / stretch;
 
-  // Slight vertical compression to conserve "volume" (feels more physical)
-  float vCompress = 1.0 + u_squish * 0.25 * weight;
+  // Slight vertical compression within the band only
+  float vCompress = 1.0 + u_squish * 0.2 * weight;
   uv.y = u_squish_cy + (uv.y - u_squish_cy) * vCompress;
 
   uv = clamp(uv, 0.001, 0.999);
-  vec3 col = texture2D(u_tex, uv).rgb;
-
-  gl_FragColor = vec4(col, 1.0);
+  gl_FragColor = texture2D(u_tex, uv);
 }`
   },
 ];
@@ -1019,8 +1017,12 @@ let animId = null;
 // Head squish state (driven by MediaPipe)
 let squishAmount = 0;    // 0..1, smoothed
 let squishCx     = 0.5; // pinch center X
-let squishCy     = 0.5; // pinch center Y
-let squishSpan   = 0.2; // vertical band half-width
+let squishCy     = 0.5; // face center Y (UV)
+let squishSpan   = 0.2; // face half-height (UV)
+
+// Face bounding box from BlazeFace detector (normalized, mirrored)
+let faceBox       = null; // { x, y, w, h } in 0..1 UV space
+let faceBoxSmooth = null;
 
 // Snow accumulation system
 const SNOW_COLS = 256;
@@ -1482,10 +1484,6 @@ let squishCyTarget = 0.5;
 const PINCH_CLOSE = 0.06;  // fully squished
 const PINCH_OPEN  = 0.18;  // no squish
 
-// Smoothed face bounding box (normalized 0..1, mirrored X)
-let faceBox = null; // { x, y, w, h } or null when no face detected
-let faceBoxSmooth = null;
-
 async function initMediaPipe() {
   // ── Face Detector (BlazeFace via MediaPipe Tasks Vision) ──────────────
   const { FaceDetector, FilesetResolver } = await import(
@@ -1503,7 +1501,7 @@ async function initMediaPipe() {
     minDetectionConfidence: 0.5,
   });
 
-  // ── Hands (legacy @mediapipe/hands, already loaded from <head>) ───────
+  // ── Hands ─────────────────────────────────────────────────────────────
   const hands = new Hands({
     locateFile: file =>
       `https://unpkg.com/@mediapipe/hands@0.4.1675469240/${file}`
@@ -1518,10 +1516,10 @@ async function initMediaPipe() {
   await hands.initialize();
 
   // ── Shared polling loop ───────────────────────────────────────────────
-  let lastMPFrame = 0;
+  let lastHandFrame = 0;
   let lastFaceFrame = 0;
 
-  async function sendFrame(ts) {
+  function sendFrame(ts) {
     requestAnimationFrame(sendFrame);
     if (!video || video.readyState < 2) return;
 
@@ -1533,44 +1531,51 @@ async function initMediaPipe() {
       return;
     }
 
-    // Face detection at ~15fps — cheaper than hands, runs independently
+    // Face detection ~15fps
     if (ts - lastFaceFrame > 66) {
       lastFaceFrame = ts;
-      const faceResult = faceDetector.detectForVideo(video, ts);
-      if (faceResult.detections && faceResult.detections.length > 0) {
-        // Use the highest-confidence detection
-        const det = faceResult.detections[0];
-        const bb  = det.boundingBox;
-        // Normalize to 0..1 and mirror X to match our flipped feed
-        const vw = video.videoWidth, vh = video.videoHeight;
-        const nx =  1 - (bb.originX + bb.width)  / vw; // mirrored left edge
-        const ny =  bb.originY / vh;
-        const nw =  bb.width   / vw;
-        const nh =  bb.height  / vh;
-        const raw = { x: nx, y: ny, w: nw, h: nh };
-        // Smooth the box
-        if (!faceBoxSmooth) {
-          faceBoxSmooth = { ...raw };
+      try {
+        const res = faceDetector.detectForVideo(video, ts);
+        if (res.detections && res.detections.length > 0) {
+          const bb = res.detections[0].boundingBox;
+          const vw = video.videoWidth  || canvas.width;
+          const vh = video.videoHeight || canvas.height;
+          // Normalize and mirror X to match our flipped feed
+          const raw = {
+            x: 1 - (bb.originX + bb.width) / vw,
+            y:      bb.originY              / vh,
+            w:      bb.width                / vw,
+            h:      bb.height               / vh,
+          };
+          if (!faceBoxSmooth) {
+            faceBoxSmooth = { ...raw };
+          } else {
+            const a = 0.2;
+            faceBoxSmooth.x += (raw.x - faceBoxSmooth.x) * a;
+            faceBoxSmooth.y += (raw.y - faceBoxSmooth.y) * a;
+            faceBoxSmooth.w += (raw.w - faceBoxSmooth.w) * a;
+            faceBoxSmooth.h += (raw.h - faceBoxSmooth.h) * a;
+          }
+          faceBox = faceBoxSmooth;
+
+          // Drive squishCy/squishSpan directly from the face box so the
+          // shader warp band is always exactly the size of the face
+          const faceCenterY  = faceBox.y + faceBox.h * 0.5;
+          const faceHalfH    = faceBox.h * 0.55; // slight padding
+          squishCyTarget = 1.0 - faceCenterY;    // flip to UV space (0=bottom)
+          squishSpan     = faceHalfH;
         } else {
-          const a = 0.25;
-          faceBoxSmooth.x += (raw.x - faceBoxSmooth.x) * a;
-          faceBoxSmooth.y += (raw.y - faceBoxSmooth.y) * a;
-          faceBoxSmooth.w += (raw.w - faceBoxSmooth.w) * a;
-          faceBoxSmooth.h += (raw.h - faceBoxSmooth.h) * a;
+          if (faceBoxSmooth) {
+            faceBoxSmooth.h *= 0.95;
+            if (faceBoxSmooth.h < 0.02) { faceBox = null; faceBoxSmooth = null; }
+          }
         }
-        faceBox = faceBoxSmooth;
-      } else {
-        // Decay box slowly so a brief miss doesn't kill the effect
-        if (faceBoxSmooth) {
-          faceBoxSmooth.h *= 0.95;
-          if (faceBoxSmooth.h < 0.02) { faceBox = null; faceBoxSmooth = null; }
-        }
-      }
+      } catch(e) { /* detector not ready yet */ }
     }
 
-    // Hands at ~20fps
-    if (ts - lastMPFrame > 48) {
-      lastMPFrame = ts;
+    // Hands ~20fps
+    if (ts - lastHandFrame > 48) {
+      lastHandFrame = ts;
       hands.send({ image: video });
     }
   }
@@ -1582,10 +1587,10 @@ function onHandResults(results) {
   handOverlay.height = canvas.clientHeight;
   hCtx.clearRect(0, 0, handOverlay.width, handOverlay.height);
 
-  // Draw face box for debug (only on squish filter)
+  // Draw subtle face box outline
   if (faceBox && currentFilter === SQUISH_FILTER_IDX) {
     const W = handOverlay.width, H = handOverlay.height;
-    hCtx.strokeStyle = 'rgba(232,255,71,0.3)';
+    hCtx.strokeStyle = 'rgba(232,255,71,0.25)';
     hCtx.lineWidth = 1;
     hCtx.setLineDash([4, 4]);
     hCtx.strokeRect(faceBox.x * W, faceBox.y * H, faceBox.w * W, faceBox.h * H);
@@ -1599,44 +1604,39 @@ function onHandResults(results) {
   }
 
   let bestPinch = 0;
-  let bestCx = 0.5, bestCy = 0.5, bestSpan = 0.2;
+  let bestCx = 0.5;
 
   for (const landmarks of results.multiHandLandmarks) {
     const thumb = landmarks[4];
     const index = landmarks[8];
-    const wrist = landmarks[0];
 
     const tx = 1 - thumb.x, ty = thumb.y;
     const ix = 1 - index.x, iy = index.y;
-    const wx = 1 - wrist.x, wy = wrist.y;
 
     const pinchMidX = (tx + ix) / 2;
     const pinchMidY = (ty + iy) / 2;
 
-    // Gate: pinch must be within the face bounding box (expanded slightly).
-    // Fall back to a generous upper-third zone if face detector hasn't fired yet.
+    // Gate: require pinch to be within the detected face box
     let inFaceZone;
     if (faceBox) {
-      const pad = 0.08; // expand box a little so fingertips at the edges still count
+      const pad = 0.07;
       inFaceZone = pinchMidX >= faceBox.x - pad
                 && pinchMidX <= faceBox.x + faceBox.w + pad
                 && pinchMidY >= faceBox.y - pad
                 && pinchMidY <= faceBox.y + faceBox.h + pad;
     } else {
-      inFaceZone = pinchMidY < 0.45; // conservative fallback
+      inFaceZone = pinchMidY < 0.45; // fallback before face detector fires
     }
 
-    const pinchDist = Math.sqrt((tx - ix) ** 2 + (ty - iy) ** 2);
-    const rawStrength = 1 - Math.min(1, Math.max(0,
+    const pinchDist    = Math.sqrt((tx - ix) ** 2 + (ty - iy) ** 2);
+    const rawStrength  = 1 - Math.min(1, Math.max(0,
       (pinchDist - PINCH_CLOSE) / (PINCH_OPEN - PINCH_CLOSE)
     ));
     const pinchStrength = inFaceZone ? rawStrength : 0;
 
     if (pinchStrength > bestPinch) {
       bestPinch = pinchStrength;
-      bestCx = (tx + ix) / 2;
-      bestCy = (ty + iy) / 2;
-      bestSpan = Math.abs(wy - bestCy) * 0.8 + 0.08;
+      bestCx    = pinchMidX;
     }
 
     drawHand(landmarks, pinchStrength, inFaceZone);
@@ -1644,13 +1644,11 @@ function onHandResults(results) {
 
   squishTarget   = bestPinch;
   squishCxTarget = bestCx;
-  squishCyTarget = bestCy;
-  squishSpan     = bestSpan;
 
   const lerpRate = squishTarget > squishAmount ? 0.18 : 0.10;
-  squishAmount += (squishTarget  - squishAmount)  * lerpRate;
-  squishCx     += (squishCxTarget - squishCx)     * 0.2;
-  squishCy     += (squishCyTarget - squishCy)     * 0.2;
+  squishAmount += (squishTarget   - squishAmount)  * lerpRate;
+  squishCx     += (squishCxTarget - squishCx)      * 0.2;
+  squishCy     += (squishCyTarget - squishCy)      * 0.15;
 }
 
 function drawHand(landmarks, pinchStrength, inFaceZone) {
@@ -1666,12 +1664,10 @@ function drawHand(landmarks, pinchStrength, inFaceZone) {
     [5,9],[9,13],[13,17]
   ];
 
-  // Dim skeleton when hand is outside the face zone
-  const alpha = inFaceZone ? (0.5 + pinchStrength * 0.5) : 0.2;
+  const alpha    = inFaceZone ? (0.5 + pinchStrength * 0.5) : 0.2;
   const accent   = `rgba(232,255,71,${alpha})`;
   const pinchCol = (pinchStrength > 0.5 && inFaceZone)
-    ? `rgba(255,71,120,${pinchStrength})`
-    : accent;
+    ? `rgba(255,71,120,${pinchStrength})` : accent;
 
   hCtx.strokeStyle = accent;
   hCtx.lineWidth   = 1.5;

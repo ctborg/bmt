@@ -974,15 +974,17 @@ varying vec2 v_uv;
 
 void main(){
   vec2 uv = v_uv;
-  uv.x = 1.0 - uv.x; // mirror
+
+  // Work in unmirrored UV space so cx from the face detector is used directly.
+  // We'll flip X at the very end when sampling.
 
   // Hard clip: pixels outside the face band are never warped
   float dy   = abs(uv.y - u_squish_cy);
   float span = max(u_squish_span, 0.04);
 
-  // Outside face region — pass through unchanged
+  // Outside face region — pass through unchanged (mirror only for sample)
   if(dy > span * 1.1){
-    gl_FragColor = texture2D(u_tex, uv);
+    gl_FragColor = texture2D(u_tex, vec2(1.0 - uv.x, uv.y));
     return;
   }
 
@@ -995,7 +997,8 @@ void main(){
   uv.x = cx + (uv.x - cx) / stretch;
 
   uv = clamp(uv, 0.001, 0.999);
-  gl_FragColor = texture2D(u_tex, uv);
+  // Mirror X when sampling
+  gl_FragColor = texture2D(u_tex, vec2(1.0 - uv.x, uv.y));
 }`
   },
 ];
@@ -1558,8 +1561,9 @@ async function initMediaPipe() {
 
           // Drive squishCy/squishSpan/squishCx directly from the face box.
           // UV Y=0 is top, Y=1 is bottom — same convention as face detector. No flip.
+          // X: use unmirrored detector coords (shader handles mirror at sample time).
           const faceCenterY  = faceBox.y + faceBox.h * 0.5;
-          const faceCenterX  = faceBox.x + faceBox.w * 0.5;
+          const faceCenterX  = (bb.originX + bb.width * 0.5) / vw; // unmirrored
           const faceHalfH    = faceBox.h * 0.55; // slight padding
           squishCyTarget = faceCenterY;
           squishCxTarget = faceCenterX;
